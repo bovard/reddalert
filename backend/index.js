@@ -5,12 +5,20 @@ const Parser = require("rss-parser");
 admin.initializeApp();
 
 const db = admin.firestore();
-const messaging = admin.messaging();
 const parser = new Parser();
+
+// Subreddits to monitor
+const SUBREDDITS = [
+  "Catan",
+  "SettlersofCatan",
+  "CatanUniverse",
+  "Colonist",
+  "twosheep",
+];
 
 /**
  * Scheduled function that runs every 15 minutes to check Reddit RSS feeds
- * for new posts matching configured keywords.
+ * and add new posts to all users' queues.
  */
 exports.checkRedditFeeds = functions.pubsub
   .schedule("every 15 minutes")
@@ -18,54 +26,40 @@ exports.checkRedditFeeds = functions.pubsub
     console.log("Starting Reddit feed check...");
 
     try {
-      // Get all active monitors from Firestore
-      const monitorsSnapshot = await db.collection("monitors").where("active", "==", true).get();
+      // Fetch posts from all subreddits
+      const allPosts = [];
 
-      if (monitorsSnapshot.empty) {
-        console.log("No active monitors found");
-        return null;
-      }
-
-      const notifications = [];
-
-      for (const monitorDoc of monitorsSnapshot.docs) {
-        const monitor = monitorDoc.data();
-        const { subreddit, keywords, userId } = monitor;
-
-        console.log(`Checking r/${subreddit} for keywords: ${keywords.join(", ")}`);
-
+      for (const subreddit of SUBREDDITS) {
         try {
           const posts = await fetchSubredditPosts(subreddit);
-          const matchingPosts = filterPostsByKeywords(posts, keywords);
-
-          // Filter out already seen posts
-          const newPosts = await filterSeenPosts(monitorDoc.id, matchingPosts);
-
-          if (newPosts.length > 0) {
-            console.log(`Found ${newPosts.length} new matching posts in r/${subreddit}`);
-
-            // Mark posts as seen
-            await markPostsAsSeen(monitorDoc.id, newPosts);
-
-            // Queue notifications
-            for (const post of newPosts) {
-              notifications.push({
-                userId,
-                subreddit,
-                post,
-                matchedKeywords: findMatchedKeywords(post, keywords),
-              });
-            }
-          }
+          allPosts.push(...posts);
+          console.log(`Fetched ${posts.length} posts from r/${subreddit}`);
         } catch (error) {
-          console.error(`Error checking r/${subreddit}:`, error.message);
+          console.error(`Error fetching r/${subreddit}:`, error.message);
         }
       }
 
-      // Send all notifications
-      await sendNotifications(notifications);
+      if (allPosts.length === 0) {
+        console.log("No posts fetched");
+        return null;
+      }
 
-      console.log(`Feed check complete. Sent ${notifications.length} notifications.`);
+      // Get all users
+      const usersSnapshot = await db.collection("users").get();
+
+      if (usersSnapshot.empty) {
+        console.log("No users found");
+        return null;
+      }
+
+      console.log(`Processing ${allPosts.length} posts for ${usersSnapshot.size} users`);
+
+      // Add new posts to each user's queue
+      for (const userDoc of usersSnapshot.docs) {
+        await addPostsToUserQueue(userDoc.id, allPosts);
+      }
+
+      console.log("Feed check complete");
       return null;
     } catch (error) {
       console.error("Error in checkRedditFeeds:", error);
@@ -81,258 +75,237 @@ async function fetchSubredditPosts(subreddit) {
   const feed = await parser.parseURL(feedUrl);
 
   return feed.items.map((item) => ({
-    id: item.id || item.guid,
-    title: item.title,
-    link: item.link,
-    author: item.author || item.creator,
+    redditId: item.id || item.guid || item.link,
+    title: item.title || "",
+    url: item.link || "",
+    author: (item.author || item.creator || "").replace("/u/", ""),
+    subreddit: subreddit,
     content: item.contentSnippet || item.content || "",
-    pubDate: item.pubDate,
+    redditCreatedAt: item.pubDate ? new Date(item.pubDate) : new Date(),
   }));
 }
 
 /**
- * Filter posts that contain any of the keywords
+ * Add new posts to a user's queue (skip already seen posts)
  */
-function filterPostsByKeywords(posts, keywords) {
-  const lowerKeywords = keywords.map((k) => k.toLowerCase());
+async function addPostsToUserQueue(userId, posts) {
+  const userPostsRef = db.collection("users").doc(userId).collection("posts");
 
-  return posts.filter((post) => {
-    const searchText = `${post.title} ${post.content}`.toLowerCase();
-    return lowerKeywords.some((keyword) => searchText.includes(keyword));
-  });
-}
-
-/**
- * Find which keywords matched a post
- */
-function findMatchedKeywords(post, keywords) {
-  const searchText = `${post.title} ${post.content}`.toLowerCase();
-  return keywords.filter((keyword) => searchText.includes(keyword.toLowerCase()));
-}
-
-/**
- * Filter out posts we've already seen
- */
-async function filterSeenPosts(monitorId, posts) {
-  if (posts.length === 0) return [];
-
-  const seenPostsRef = db.collection("monitors").doc(monitorId).collection("seenPosts");
-
-  const newPosts = [];
-  for (const post of posts) {
-    const postDoc = await seenPostsRef.doc(encodePostId(post.id)).get();
-    if (!postDoc.exists) {
-      newPosts.push(post);
-    }
-  }
-
-  return newPosts;
-}
-
-/**
- * Mark posts as seen in Firestore
- */
-async function markPostsAsSeen(monitorId, posts) {
-  const seenPostsRef = db.collection("monitors").doc(monitorId).collection("seenPosts");
-  const batch = db.batch();
+  let addedCount = 0;
 
   for (const post of posts) {
-    const docRef = seenPostsRef.doc(encodePostId(post.id));
-    batch.set(docRef, {
-      postId: post.id,
-      title: post.title,
-      seenAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  }
+    // Check if post already exists for this user (by redditId)
+    const existingQuery = await userPostsRef
+      .where("redditId", "==", post.redditId)
+      .limit(1)
+      .get();
 
-  await batch.commit();
-}
-
-/**
- * Encode post ID to be Firestore-safe
- */
-function encodePostId(postId) {
-  return Buffer.from(postId).toString("base64").replace(/[/+=]/g, "_");
-}
-
-/**
- * Send push notifications to users
- */
-async function sendNotifications(notifications) {
-  for (const notification of notifications) {
-    const { userId, subreddit, post, matchedKeywords } = notification;
-
-    // Get user's FCM tokens
-    const userDoc = await db.collection("users").doc(userId).get();
-    if (!userDoc.exists) {
-      console.log(`User ${userId} not found, skipping notification`);
-      continue;
-    }
-
-    const userData = userDoc.data();
-    const fcmTokens = userData.fcmTokens || [];
-
-    if (fcmTokens.length === 0) {
-      console.log(`No FCM tokens for user ${userId}`);
-      continue;
-    }
-
-    const message = {
-      notification: {
-        title: `r/${subreddit}: ${matchedKeywords.join(", ")}`,
-        body: truncate(post.title, 100),
-      },
-      data: {
-        postId: post.id,
-        postUrl: post.link,
-        subreddit: subreddit,
-        keywords: matchedKeywords.join(","),
-      },
-    };
-
-    // Send to all user's devices
-    for (const token of fcmTokens) {
-      try {
-        await messaging.send({ ...message, token });
-        console.log(`Notification sent to ${userId}`);
-      } catch (error) {
-        if (
-          error.code === "messaging/registration-token-not-registered" ||
-          error.code === "messaging/invalid-registration-token"
-        ) {
-          // Remove invalid token
-          await removeInvalidToken(userId, token);
-        } else {
-          console.error(`Error sending notification:`, error.message);
-        }
-      }
+    if (existingQuery.empty) {
+      // Add new post to user's queue
+      await userPostsRef.add({
+        ...post,
+        redditCreatedAt: admin.firestore.Timestamp.fromDate(post.redditCreatedAt),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        status: "new",
+        statusUpdatedAt: null,
+      });
+      addedCount++;
     }
   }
-}
 
-/**
- * Remove invalid FCM token from user
- */
-async function removeInvalidToken(userId, token) {
-  await db
-    .collection("users")
-    .doc(userId)
-    .update({
-      fcmTokens: admin.firestore.FieldValue.arrayRemove(token),
-    });
-  console.log(`Removed invalid token for user ${userId}`);
-}
-
-/**
- * Truncate string to max length
- */
-function truncate(str, maxLength) {
-  if (str.length <= maxLength) return str;
-  return str.substring(0, maxLength - 3) + "...";
+  if (addedCount > 0) {
+    console.log(`Added ${addedCount} new posts for user ${userId}`);
+  }
 }
 
 /**
  * HTTP endpoint to manually trigger a feed check (for testing)
  */
 exports.manualCheck = functions.https.onRequest(async (req, res) => {
-  // Only allow POST requests
-  if (req.method !== "POST") {
-    res.status(405).send("Method not allowed");
+  // Set CORS headers
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Methods", "GET, POST");
+
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
     return;
   }
 
   try {
-    await exports.checkRedditFeeds.run();
-    res.status(200).json({ success: true, message: "Feed check completed" });
+    // Run the feed check
+    console.log("Manual feed check triggered");
+
+    const allPosts = [];
+
+    for (const subreddit of SUBREDDITS) {
+      try {
+        const posts = await fetchSubredditPosts(subreddit);
+        allPosts.push(...posts);
+      } catch (error) {
+        console.error(`Error fetching r/${subreddit}:`, error.message);
+      }
+    }
+
+    const usersSnapshot = await db.collection("users").get();
+
+    for (const userDoc of usersSnapshot.docs) {
+      await addPostsToUserQueue(userDoc.id, allPosts);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Feed check completed",
+      postsFound: allPosts.length,
+      usersProcessed: usersSnapshot.size,
+    });
   } catch (error) {
+    console.error("Manual check error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 /**
- * Callable function to add a new monitor
+ * Callable function to update post status
  */
-exports.addMonitor = functions.https.onCall(async (data, context) => {
+exports.updatePostStatus = functions.https.onCall(async (data, context) => {
   // Check authentication
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "User must be authenticated");
   }
 
-  const { subreddit, keywords } = data;
+  const { postId, status } = data;
 
-  if (!subreddit || !keywords || keywords.length === 0) {
-    throw new functions.https.HttpsError("invalid-argument", "Subreddit and keywords are required");
+  if (!postId || !status) {
+    throw new functions.https.HttpsError("invalid-argument", "Post ID and status are required");
   }
 
-  const monitor = {
-    userId: context.auth.uid,
-    subreddit: subreddit.toLowerCase().replace(/^r\//, ""),
-    keywords: keywords.map((k) => k.toLowerCase().trim()),
-    active: true,
+  if (!["new", "dismissed", "done"].includes(status)) {
+    throw new functions.https.HttpsError("invalid-argument", "Invalid status value");
+  }
+
+  const postRef = db
+    .collection("users")
+    .doc(context.auth.uid)
+    .collection("posts")
+    .doc(postId);
+
+  const postDoc = await postRef.get();
+
+  if (!postDoc.exists) {
+    throw new functions.https.HttpsError("not-found", "Post not found");
+  }
+
+  await postRef.update({
+    status: status,
+    statusUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return { success: true, postId, status };
+});
+
+/**
+ * Callable function to restore a dismissed post to new status
+ */
+exports.restorePost = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "User must be authenticated");
+  }
+
+  const { postId } = data;
+
+  if (!postId) {
+    throw new functions.https.HttpsError("invalid-argument", "Post ID is required");
+  }
+
+  const postRef = db
+    .collection("users")
+    .doc(context.auth.uid)
+    .collection("posts")
+    .doc(postId);
+
+  const postDoc = await postRef.get();
+
+  if (!postDoc.exists) {
+    throw new functions.https.HttpsError("not-found", "Post not found");
+  }
+
+  await postRef.update({
+    status: "new",
+    statusUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return { success: true, postId };
+});
+
+/**
+ * Trigger when a new user signs up - creates user document
+ */
+exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
+  console.log(`New user created: ${user.uid} (${user.email})`);
+
+  // Create user document
+  await db.collection("users").doc(user.uid).set({
+    email: user.email,
+    displayName: user.displayName || null,
+    photoURL: user.photoURL || null,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  };
+  });
 
-  const docRef = await db.collection("monitors").add(monitor);
+  // Fetch current posts and add to their queue immediately
+  console.log(`Fetching initial posts for new user ${user.uid}`);
 
-  return { id: docRef.id, ...monitor };
+  const allPosts = [];
+
+  for (const subreddit of SUBREDDITS) {
+    try {
+      const posts = await fetchSubredditPosts(subreddit);
+      allPosts.push(...posts);
+    } catch (error) {
+      console.error(`Error fetching r/${subreddit}:`, error.message);
+    }
+  }
+
+  await addPostsToUserQueue(user.uid, allPosts);
+
+  console.log(`Added ${allPosts.length} initial posts for new user ${user.uid}`);
 });
 
 /**
- * Callable function to remove a monitor
+ * Cleanup function - remove posts older than 30 days
+ * Runs daily at midnight
  */
-exports.removeMonitor = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "User must be authenticated");
-  }
+exports.cleanupOldPosts = functions.pubsub
+  .schedule("every day 00:00")
+  .onRun(async (context) => {
+    console.log("Starting cleanup of old posts...");
 
-  const { monitorId } = data;
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  if (!monitorId) {
-    throw new functions.https.HttpsError("invalid-argument", "Monitor ID is required");
-  }
+    const usersSnapshot = await db.collection("users").get();
 
-  const monitorRef = db.collection("monitors").doc(monitorId);
-  const monitorDoc = await monitorRef.get();
+    for (const userDoc of usersSnapshot.docs) {
+      const oldPostsQuery = await db
+        .collection("users")
+        .doc(userDoc.id)
+        .collection("posts")
+        .where("createdAt", "<", admin.firestore.Timestamp.fromDate(thirtyDaysAgo))
+        .get();
 
-  if (!monitorDoc.exists) {
-    throw new functions.https.HttpsError("not-found", "Monitor not found");
-  }
+      const batch = db.batch();
+      let deleteCount = 0;
 
-  if (monitorDoc.data().userId !== context.auth.uid) {
-    throw new functions.https.HttpsError("permission-denied", "Not authorized to delete this monitor");
-  }
+      oldPostsQuery.docs.forEach((doc) => {
+        batch.delete(doc.ref);
+        deleteCount++;
+      });
 
-  await monitorRef.delete();
+      if (deleteCount > 0) {
+        await batch.commit();
+        console.log(`Deleted ${deleteCount} old posts for user ${userDoc.id}`);
+      }
+    }
 
-  return { success: true };
-});
-
-/**
- * Callable function to toggle monitor active state
- */
-exports.toggleMonitor = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "User must be authenticated");
-  }
-
-  const { monitorId, active } = data;
-
-  if (!monitorId || typeof active !== "boolean") {
-    throw new functions.https.HttpsError("invalid-argument", "Monitor ID and active state are required");
-  }
-
-  const monitorRef = db.collection("monitors").doc(monitorId);
-  const monitorDoc = await monitorRef.get();
-
-  if (!monitorDoc.exists) {
-    throw new functions.https.HttpsError("not-found", "Monitor not found");
-  }
-
-  if (monitorDoc.data().userId !== context.auth.uid) {
-    throw new functions.https.HttpsError("permission-denied", "Not authorized to modify this monitor");
-  }
-
-  await monitorRef.update({ active });
-
-  return { success: true, active };
-});
+    console.log("Cleanup complete");
+    return null;
+  });

@@ -1,37 +1,52 @@
 # Reddalert
 
-A Reddit monitoring app that sends push notifications when specific topics are discussed in your favorite subreddits.
+A post queue app for Catan subreddits. Stay on top of discussions, take action, and track your engagement.
+
+## Platforms
+
+- Web (Firebase Hosting)
+- Android
+- iOS
+
+## Monitored Subreddits
+
+- r/Catan
+- r/SettlersofCatan
+- r/CatanUniverse
+- r/Colonist
+- r/twosheep
+
+## Features
+
+- **Google Sign-In** - Authenticate with your Gmail account
+- **Post Queue** - New posts from Catan subreddits appear in your queue
+- **Swipe Actions** - Swipe left to dismiss, swipe right to mark as done
+- **Open in Reddit** - Tap a post to open it in Reddit and comment
+- **History** - View all posts you've marked as done
+
+## How It Works
+
+1. Sign in with Google
+2. Cloud Function runs every 15 minutes, fetching new posts from all subreddits
+3. New posts are added to each user's queue in Firestore
+4. Open the app to see your queue of new posts
+5. Tap to open in Reddit, swipe to dismiss or mark done
+6. View your history of completed posts
 
 ## Architecture
 
 ```
 reddalert/
-├── app/              # Flutter app (Android & iOS)
+├── app/                    # Flutter app (Web, Android, iOS)
 │   └── lib/
-│       ├── main.dart
-│       ├── models/   # Data models
-│       ├── screens/  # UI screens
-│       ├── services/ # Firebase services
-│       └── widgets/  # Reusable widgets
-└── backend/          # Firebase Cloud Functions
-    └── index.js      # RSS polling & notification logic
+│       ├── main.dart       # Entry point with auth wrapper
+│       ├── models/         # Data models (Post)
+│       ├── screens/        # UI screens (Login, Posts, History)
+│       ├── services/       # Firebase services (Auth, Posts)
+│       └── widgets/        # Reusable widgets (PostCard)
+└── backend/                # Firebase Cloud Functions
+    └── index.js            # RSS polling & post distribution
 ```
-
-## Features
-
-- Monitor multiple subreddits
-- Set custom keywords for each monitor
-- Push notifications when keywords are detected
-- Toggle monitors on/off
-- Works on Android and iOS
-
-## How It Works
-
-1. Cloud Functions run every 15 minutes
-2. Fetches RSS feeds from monitored subreddits
-3. Searches post titles and content for keywords
-4. Sends push notifications for new matches
-5. Tracks seen posts to avoid duplicate notifications
 
 ## Setup
 
@@ -45,22 +60,38 @@ reddalert/
 ### 1. Configure Firebase
 
 ```bash
+# Login to Firebase
+firebase login
+
+# Configure Flutter app
 cd app
 flutterfire configure
 ```
 
-Select your Firebase project and enable Android/iOS.
+Select your Firebase project and enable Android, iOS, and Web.
 
-### 2. Deploy Cloud Functions
+### 2. Enable Google Sign-In
+
+1. Go to Firebase Console > Authentication > Sign-in method
+2. Enable Google provider
+3. Add your OAuth client IDs for Android/iOS/Web
+
+### 3. Deploy Cloud Functions
 
 ```bash
 cd backend
-firebase login
-firebase init functions  # Select your project
 firebase deploy --only functions
 ```
 
-### 3. Run the App
+### 4. Deploy Web App
+
+```bash
+cd app
+flutter build web
+firebase deploy --only hosting
+```
+
+### 5. Run Mobile App
 
 ```bash
 cd app
@@ -72,26 +103,38 @@ flutter run
 ```
 users/
   {userId}/
-    fcmTokens: string[]
-    updatedAt: timestamp
-
-monitors/
-  {monitorId}/
-    userId: string
-    subreddit: string
-    keywords: string[]
-    active: boolean
+    email: string
+    displayName: string
+    photoURL: string
     createdAt: timestamp
-    seenPosts/
+    posts/
       {postId}/
-        postId: string
+        redditId: string
         title: string
-        seenAt: timestamp
+        url: string
+        author: string
+        subreddit: string
+        content: string
+        redditCreatedAt: timestamp
+        createdAt: timestamp
+        status: "new" | "dismissed" | "done"
+        statusUpdatedAt: timestamp
 ```
+
+## Cloud Functions
+
+| Function | Trigger | Description |
+|----------|---------|-------------|
+| `checkRedditFeeds` | Every 15 min | Polls RSS feeds, adds new posts to user queues |
+| `onUserCreate` | Auth | Creates user doc, populates initial posts |
+| `updatePostStatus` | Callable | Updates post status (new/dismissed/done) |
+| `restorePost` | Callable | Restores post to "new" status |
+| `cleanupOldPosts` | Daily | Removes posts older than 30 days |
+| `manualCheck` | HTTP | Manually trigger feed check (for testing) |
 
 ## Limitations
 
-- RSS feeds only include ~25 most recent posts
+- RSS feeds only include ~25 most recent posts per subreddit
 - Polling interval is 15 minutes (not real-time)
 - Cannot monitor comments, only posts
 - Private subreddits are not accessible

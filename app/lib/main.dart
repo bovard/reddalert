@@ -1,15 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'screens/home_screen.dart';
-import 'services/notification_service.dart';
-
-// Handle background messages
-@pragma('vm:entry-point')
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp();
-  print('Handling background message: ${message.messageId}');
-}
+import 'screens/login_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,10 +10,8 @@ void main() async {
   // Initialize Firebase (will fail until firebase_options.dart is generated)
   try {
     await Firebase.initializeApp();
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-    await NotificationService.initialize();
   } catch (e) {
-    print('Firebase not configured yet: $e');
+    debugPrint('Firebase not configured yet: $e');
   }
 
   runApp(const ReddalertApp());
@@ -49,7 +40,35 @@ class ReddalertApp extends StatelessWidget {
         useMaterial3: true,
       ),
       themeMode: ThemeMode.system,
-      home: const HomeScreen(),
+      home: const AuthWrapper(),
+    );
+  }
+}
+
+/// Wrapper that shows login or home based on auth state
+class AuthWrapper extends StatelessWidget {
+  const AuthWrapper({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        // Show loading while checking auth state
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        // Show login if not authenticated
+        if (!snapshot.hasData) {
+          return const LoginScreen();
+        }
+
+        // Show home if authenticated
+        return const HomeScreen();
+      },
     );
   }
 }

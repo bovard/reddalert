@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import '../services/auth_service.dart';
-import '../services/monitor_service.dart';
-import '../models/monitor.dart';
-import '../widgets/monitor_card.dart';
-import 'add_monitor_screen.dart';
+import '../services/post_service.dart';
+import 'posts_screen.dart';
+import 'history_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -14,32 +12,12 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  bool _isLoading = false;
+  int _currentIndex = 0;
 
-  @override
-  void initState() {
-    super.initState();
-    _ensureSignedIn();
-  }
-
-  Future<void> _ensureSignedIn() async {
-    if (!AuthService.isSignedIn) {
-      setState(() => _isLoading = true);
-      try {
-        await AuthService.signInAnonymously();
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error signing in: $e')),
-          );
-        }
-      } finally {
-        if (mounted) {
-          setState(() => _isLoading = false);
-        }
-      }
-    }
-  }
+  final _screens = const [
+    PostsScreen(),
+    HistoryScreen(),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -47,93 +25,95 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('Reddalert'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => setState(() {}),
-            tooltip: 'Refresh',
+          // User avatar/menu
+          PopupMenuButton<String>(
+            icon: CircleAvatar(
+              radius: 16,
+              backgroundImage: AuthService.photoURL != null
+                  ? NetworkImage(AuthService.photoURL!)
+                  : null,
+              child: AuthService.photoURL == null
+                  ? const Icon(Icons.person, size: 20)
+                  : null,
+            ),
+            onSelected: (value) {
+              if (value == 'signout') {
+                _signOut();
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                enabled: false,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      AuthService.displayName ?? 'User',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      AuthService.email ?? '',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                  ],
+                ),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'signout',
+                child: Row(
+                  children: [
+                    Icon(Icons.logout, size: 20),
+                    SizedBox(width: 8),
+                    Text('Sign out'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: _screens[_currentIndex],
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _currentIndex,
+        onDestinationSelected: (index) {
+          setState(() => _currentIndex = index);
+        },
+        destinations: [
+          NavigationDestination(
+            icon: StreamBuilder<int>(
+              stream: PostService.getNewPostsCount(),
+              builder: (context, snapshot) {
+                final count = snapshot.data ?? 0;
+                if (count > 0) {
+                  return Badge(
+                    label: Text(count > 99 ? '99+' : count.toString()),
+                    child: const Icon(Icons.inbox_outlined),
+                  );
+                }
+                return const Icon(Icons.inbox_outlined);
+              },
+            ),
+            selectedIcon: const Icon(Icons.inbox),
+            label: 'New',
+          ),
+          const NavigationDestination(
+            icon: Icon(Icons.history_outlined),
+            selectedIcon: Icon(Icons.history),
+            label: 'History',
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : StreamBuilder<User?>(
-              stream: AuthService.authStateChanges,
-              builder: (context, authSnapshot) {
-                if (!authSnapshot.hasData) {
-                  return const _NotSignedInView();
-                }
-
-                return StreamBuilder<List<Monitor>>(
-                  stream: MonitorService.getMonitors(),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-
-                    if (snapshot.hasError) {
-                      return _ErrorView(error: snapshot.error.toString());
-                    }
-
-                    final monitors = snapshot.data ?? [];
-
-                    if (monitors.isEmpty) {
-                      return const _EmptyView();
-                    }
-
-                    return ListView.builder(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: monitors.length,
-                      itemBuilder: (context, index) {
-                        return MonitorCard(
-                          monitor: monitors[index],
-                          onToggle: (active) => _toggleMonitor(monitors[index], active),
-                          onDelete: () => _deleteMonitor(monitors[index]),
-                        );
-                      },
-                    );
-                  },
-                );
-              },
-            ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addMonitor,
-        icon: const Icon(Icons.add),
-        label: const Text('Add Monitor'),
-      ),
     );
   }
 
-  Future<void> _addMonitor() async {
-    final result = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (context) => const AddMonitorScreen()),
-    );
-
-    if (result == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Monitor added successfully!')),
-      );
-    }
-  }
-
-  Future<void> _toggleMonitor(Monitor monitor, bool active) async {
-    try {
-      await MonitorService.toggleMonitorDirect(monitor.id, active);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _deleteMonitor(Monitor monitor) async {
+  Future<void> _signOut() async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Monitor?'),
-        content: Text('Stop monitoring r/${monitor.subreddit}?'),
+        title: const Text('Sign out?'),
+        content: const Text('Are you sure you want to sign out?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -141,119 +121,14 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Delete'),
+            child: const Text('Sign out'),
           ),
         ],
       ),
     );
 
     if (confirm == true) {
-      try {
-        await MonitorService.removeMonitorDirect(monitor.id);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Monitor deleted')),
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e')),
-          );
-        }
-      }
+      await AuthService.signOut();
     }
-  }
-}
-
-class _NotSignedInView extends StatelessWidget {
-  const _NotSignedInView();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.account_circle, size: 64, color: Colors.grey),
-          const SizedBox(height: 16),
-          const Text('Not signed in'),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: () => AuthService.signInAnonymously(),
-            child: const Text('Sign In'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EmptyView extends StatelessWidget {
-  const _EmptyView();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.notifications_none,
-              size: 80,
-              color: Theme.of(context).colorScheme.primary.withOpacity(0.5),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              'No monitors yet',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Add a monitor to get notified when specific topics are discussed in your favorite subreddits.',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Colors.grey,
-                  ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  final String error;
-
-  const _ErrorView({required this.error});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            Text(
-              'Error loading monitors',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              error,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.grey),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
