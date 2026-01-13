@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import '../services/post_service.dart';
+import '../services/subscription_service.dart';
 import 'posts_screen.dart';
 import 'history_screen.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -20,58 +22,54 @@ class _HomeScreenState extends State<HomeScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    // Initialize default subscriptions if needed
+    _initializeSubscriptions();
+  }
+
+  Future<void> _initializeSubscriptions() async {
+    try {
+      await SubscriptionService.initializeDefaults();
+    } catch (e) {
+      debugPrint('Error initializing subscriptions: $e');
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Reddalert'),
         actions: [
-          // User avatar/menu
-          PopupMenuButton<String>(
-            icon: CircleAvatar(
-              radius: 16,
-              backgroundImage: AuthService.photoURL != null
-                  ? NetworkImage(AuthService.photoURL!)
-                  : null,
-              child: AuthService.photoURL == null
-                  ? const Icon(Icons.person, size: 20)
-                  : null,
+          // Settings button
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SettingsScreen()),
             ),
-            onSelected: (value) {
-              if (value == 'signout') {
-                _signOut();
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                enabled: false,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      AuthService.displayName ?? 'User',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    Text(
-                      AuthService.email ?? '',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                    ),
-                  ],
-                ),
-              ),
-              const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: 'signout',
-                child: Row(
-                  children: [
-                    Icon(Icons.logout, size: 20),
-                    SizedBox(width: 8),
-                    Text('Sign out'),
-                  ],
-                ),
-              ),
-            ],
+            tooltip: 'Settings',
           ),
-          const SizedBox(width: 8),
+          // User avatar
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: GestureDetector(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsScreen()),
+              ),
+              child: CircleAvatar(
+                radius: 16,
+                backgroundImage: AuthService.photoURL != null
+                    ? NetworkImage(AuthService.photoURL!)
+                    : null,
+                child: AuthService.photoURL == null
+                    ? const Icon(Icons.person, size: 20)
+                    : null,
+              ),
+            ),
+          ),
         ],
       ),
       body: _screens[_currentIndex],
@@ -106,29 +104,5 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
-  }
-
-  Future<void> _signOut() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Sign out?'),
-        content: const Text('Are you sure you want to sign out?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Sign out'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm == true) {
-      await AuthService.signOut();
-    }
   }
 }

@@ -5,20 +5,57 @@ const Parser = require("rss-parser");
 admin.initializeApp();
 
 const db = admin.firestore();
+const messaging = admin.messaging();
 const parser = new Parser();
 
-// Subreddits to monitor
-const SUBREDDITS = [
+// All available subreddits to monitor
+const ALL_SUBREDDITS = [
   "Catan",
   "SettlersofCatan",
   "CatanUniverse",
   "Colonist",
   "twosheep",
+  "boardgames",
+  "tabletopgaming",
 ];
+
+// Default subscriptions for new users
+const DEFAULT_SUBSCRIPTIONS = {
+  catan: { showFilter: "all", notifyFilter: "none", enabled: true },
+  settlersofcatan: { showFilter: "all", notifyFilter: "none", enabled: true },
+  catanuniverse: { showFilter: "all", notifyFilter: "none", enabled: true },
+  colonist: { showFilter: "all", notifyFilter: "none", enabled: true },
+  twosheep: { showFilter: "all", notifyFilter: "none", enabled: true },
+  boardgames: { showFilter: "catan", notifyFilter: "none", enabled: true },
+  tabletopgaming: { showFilter: "catan", notifyFilter: "none", enabled: true },
+};
+
+// Keywords for each filter type
+const FILTER_KEYWORDS = {
+  catan: ["catan", "settler", "settlers", "catanuniverse", "catan universe"],
+  twosheep: ["twosheep", "two sheep", "2sheep", "2 sheep"],
+};
+
+/**
+ * Check if post matches a filter
+ */
+function postMatchesFilter(post, filterType, customKeywords = []) {
+  if (filterType === "all") return true;
+  if (filterType === "none") return false;
+
+  const searchText = `${post.title} ${post.content}`.toLowerCase();
+
+  if (filterType === "custom") {
+    return customKeywords.some((kw) => searchText.includes(kw.toLowerCase()));
+  }
+
+  const keywords = FILTER_KEYWORDS[filterType] || [];
+  return keywords.some((kw) => searchText.includes(kw.toLowerCase()));
+}
 
 /**
  * Scheduled function that runs every 15 minutes to check Reddit RSS feeds
- * and add new posts to all users' queues.
+ * and add new posts to users' queues based on their subscriptions.
  */
 exports.checkRedditFeeds = functions.pubsub
   .schedule("every 15 minutes")
@@ -27,21 +64,16 @@ exports.checkRedditFeeds = functions.pubsub
 
     try {
       // Fetch posts from all subreddits
-      const allPosts = [];
+      const postsBySubreddit = {};
 
-      for (const subreddit of SUBREDDITS) {
+      for (const subreddit of ALL_SUBREDDITS) {
         try {
           const posts = await fetchSubredditPosts(subreddit);
-          allPosts.push(...posts);
+          postsBySubreddit[subreddit.toLowerCase()] = posts;
           console.log(`Fetched ${posts.length} posts from r/${subreddit}`);
         } catch (error) {
           console.error(`Error fetching r/${subreddit}:`, error.message);
         }
-      }
-
-      if (allPosts.length === 0) {
-        console.log("No posts fetched");
-        return null;
       }
 
       // Get all users
@@ -52,11 +84,11 @@ exports.checkRedditFeeds = functions.pubsub
         return null;
       }
 
-      console.log(`Processing ${allPosts.length} posts for ${usersSnapshot.size} users`);
+      console.log(`Processing posts for ${usersSnapshot.size} users`);
 
-      // Add new posts to each user's queue
+      // Process each user
       for (const userDoc of usersSnapshot.docs) {
-        await addPostsToUserQueue(userDoc.id, allPosts);
+        await processUserPosts(userDoc.id, postsBySubreddit);
       }
 
       console.log("Feed check complete");
@@ -66,6 +98,136 @@ exports.checkRedditFeeds = functions.pubsub
       throw error;
     }
   });
+
+/**
+ * Process posts for a single user based on their subscriptions
+ */
+async function processUserPosts(userId, postsBySubreddit) {
+  // Get user's subscriptions
+  const subscriptionsSnapshot = await db
+    .collection("users")
+    .doc(userId)
+    .collection("subscriptions")
+    .where("enabled", "==", true)
+    .get();
+
+  if (subscriptionsSnapshot.empty) {
+    console.log(`No enabled subscriptions for user ${userId}`);
+    return;
+  }
+
+  const userPostsRef = db.collection("users").doc(userId).collection("posts");
+  let addedCount = 0;
+  const notificationsToSend = [];
+
+  for (const subDoc of subscriptionsSnapshot.docs) {
+    const subscription = subDoc.data();
+    const subreddit = subDoc.id.toLowerCase();
+    const posts = postsBySubreddit[subreddit] || [];
+
+    for (const post of posts) {
+      // Check if post matches show filter
+      const shouldShow = postMatchesFilter(
+        post,
+        subscription.showFilter,
+        subscription.customKeywords
+      );
+
+      if (!shouldShow) continue;
+
+      // Check if post already exists
+      const existingQuery = await userPostsRef
+        .where("redditId", "==", post.redditId)
+        .limit(1)
+        .get();
+
+      if (existingQuery.empty) {
+        // Add post to user's queue
+        await userPostsRef.add({
+          ...post,
+          redditCreatedAt: admin.firestore.Timestamp.fromDate(post.redditCreatedAt),
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          status: "new",
+          statusUpdatedAt: null,
+        });
+        addedCount++;
+
+        // Check if we should send notification
+        const shouldNotify = postMatchesFilter(
+          post,
+          subscription.notifyFilter,
+          subscription.customKeywords
+        );
+
+        if (shouldNotify) {
+          notificationsToSend.push({
+            userId,
+            post,
+            subreddit: post.subreddit,
+          });
+        }
+      }
+    }
+  }
+
+  if (addedCount > 0) {
+    console.log(`Added ${addedCount} new posts for user ${userId}`);
+  }
+
+  // Send notifications
+  if (notificationsToSend.length > 0) {
+    await sendNotifications(userId, notificationsToSend);
+  }
+}
+
+/**
+ * Send push notifications to a user
+ */
+async function sendNotifications(userId, notifications) {
+  // Get user's FCM tokens
+  const userDoc = await db.collection("users").doc(userId).get();
+  if (!userDoc.exists) return;
+
+  const userData = userDoc.data();
+  const fcmTokens = userData.fcmTokens || [];
+
+  if (fcmTokens.length === 0) {
+    console.log(`No FCM tokens for user ${userId}`);
+    return;
+  }
+
+  for (const notification of notifications) {
+    const { post, subreddit } = notification;
+
+    const message = {
+      notification: {
+        title: `r/${subreddit}`,
+        body: truncate(post.title, 100),
+      },
+      data: {
+        postId: post.redditId,
+        postUrl: post.url,
+        subreddit: subreddit,
+      },
+    };
+
+    for (const token of fcmTokens) {
+      try {
+        await messaging.send({ ...message, token });
+        console.log(`Notification sent to ${userId}`);
+      } catch (error) {
+        if (
+          error.code === "messaging/registration-token-not-registered" ||
+          error.code === "messaging/invalid-registration-token"
+        ) {
+          await removeInvalidToken(userId, token);
+        } else {
+          console.error(`Error sending notification:`, error.message);
+        }
+      }
+    }
+  }
+}
 
 /**
  * Fetch posts from a subreddit's RSS feed
@@ -86,43 +248,30 @@ async function fetchSubredditPosts(subreddit) {
 }
 
 /**
- * Add new posts to a user's queue (skip already seen posts)
+ * Remove invalid FCM token from user
  */
-async function addPostsToUserQueue(userId, posts) {
-  const userPostsRef = db.collection("users").doc(userId).collection("posts");
+async function removeInvalidToken(userId, token) {
+  await db
+    .collection("users")
+    .doc(userId)
+    .update({
+      fcmTokens: admin.firestore.FieldValue.arrayRemove(token),
+    });
+  console.log(`Removed invalid token for user ${userId}`);
+}
 
-  let addedCount = 0;
-
-  for (const post of posts) {
-    // Check if post already exists for this user (by redditId)
-    const existingQuery = await userPostsRef
-      .where("redditId", "==", post.redditId)
-      .limit(1)
-      .get();
-
-    if (existingQuery.empty) {
-      // Add new post to user's queue
-      await userPostsRef.add({
-        ...post,
-        redditCreatedAt: admin.firestore.Timestamp.fromDate(post.redditCreatedAt),
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        status: "new",
-        statusUpdatedAt: null,
-      });
-      addedCount++;
-    }
-  }
-
-  if (addedCount > 0) {
-    console.log(`Added ${addedCount} new posts for user ${userId}`);
-  }
+/**
+ * Truncate string to max length
+ */
+function truncate(str, maxLength) {
+  if (str.length <= maxLength) return str;
+  return str.substring(0, maxLength - 3) + "...";
 }
 
 /**
  * HTTP endpoint to manually trigger a feed check (for testing)
  */
 exports.manualCheck = functions.https.onRequest(async (req, res) => {
-  // Set CORS headers
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Methods", "GET, POST");
 
@@ -132,15 +281,14 @@ exports.manualCheck = functions.https.onRequest(async (req, res) => {
   }
 
   try {
-    // Run the feed check
     console.log("Manual feed check triggered");
 
-    const allPosts = [];
+    const postsBySubreddit = {};
 
-    for (const subreddit of SUBREDDITS) {
+    for (const subreddit of ALL_SUBREDDITS) {
       try {
         const posts = await fetchSubredditPosts(subreddit);
-        allPosts.push(...posts);
+        postsBySubreddit[subreddit.toLowerCase()] = posts;
       } catch (error) {
         console.error(`Error fetching r/${subreddit}:`, error.message);
       }
@@ -149,13 +297,13 @@ exports.manualCheck = functions.https.onRequest(async (req, res) => {
     const usersSnapshot = await db.collection("users").get();
 
     for (const userDoc of usersSnapshot.docs) {
-      await addPostsToUserQueue(userDoc.id, allPosts);
+      await processUserPosts(userDoc.id, postsBySubreddit);
     }
 
     res.status(200).json({
       success: true,
       message: "Feed check completed",
-      postsFound: allPosts.length,
+      subredditsChecked: Object.keys(postsBySubreddit).length,
       usersProcessed: usersSnapshot.size,
     });
   } catch (error) {
@@ -168,7 +316,6 @@ exports.manualCheck = functions.https.onRequest(async (req, res) => {
  * Callable function to update post status
  */
 exports.updatePostStatus = functions.https.onCall(async (data, context) => {
-  // Check authentication
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "User must be authenticated");
   }
@@ -238,7 +385,7 @@ exports.restorePost = functions.https.onCall(async (data, context) => {
 });
 
 /**
- * Trigger when a new user signs up - creates user document
+ * Trigger when a new user signs up - creates user document and default subscriptions
  */
 exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
   console.log(`New user created: ${user.uid} (${user.email})`);
@@ -251,23 +398,34 @@ exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 
-  // Fetch current posts and add to their queue immediately
+  // Create default subscriptions
+  const subscriptionsRef = db.collection("users").doc(user.uid).collection("subscriptions");
+  const batch = db.batch();
+
+  for (const [subreddit, settings] of Object.entries(DEFAULT_SUBSCRIPTIONS)) {
+    batch.set(subscriptionsRef.doc(subreddit), settings);
+  }
+
+  await batch.commit();
+  console.log(`Created default subscriptions for user ${user.uid}`);
+
+  // Fetch initial posts
   console.log(`Fetching initial posts for new user ${user.uid}`);
 
-  const allPosts = [];
+  const postsBySubreddit = {};
 
-  for (const subreddit of SUBREDDITS) {
+  for (const subreddit of ALL_SUBREDDITS) {
     try {
       const posts = await fetchSubredditPosts(subreddit);
-      allPosts.push(...posts);
+      postsBySubreddit[subreddit.toLowerCase()] = posts;
     } catch (error) {
       console.error(`Error fetching r/${subreddit}:`, error.message);
     }
   }
 
-  await addPostsToUserQueue(user.uid, allPosts);
+  await processUserPosts(user.uid, postsBySubreddit);
 
-  console.log(`Added ${allPosts.length} initial posts for new user ${user.uid}`);
+  console.log(`Initial posts added for new user ${user.uid}`);
 });
 
 /**
@@ -309,3 +467,27 @@ exports.cleanupOldPosts = functions.pubsub
     console.log("Cleanup complete");
     return null;
   });
+
+/**
+ * Callable function to save FCM token
+ */
+exports.saveFcmToken = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "User must be authenticated");
+  }
+
+  const { token } = data;
+
+  if (!token) {
+    throw new functions.https.HttpsError("invalid-argument", "Token is required");
+  }
+
+  await db
+    .collection("users")
+    .doc(context.auth.uid)
+    .update({
+      fcmTokens: admin.firestore.FieldValue.arrayUnion(token),
+    });
+
+  return { success: true };
+});

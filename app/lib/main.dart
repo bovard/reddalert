@@ -1,8 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
+import 'services/notification_service.dart';
+
+/// Handle background messages
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp();
+  debugPrint('Handling background message: ${message.messageId}');
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -10,6 +19,8 @@ void main() async {
   // Initialize Firebase (will fail until firebase_options.dart is generated)
   try {
     await Firebase.initializeApp();
+    // Set up background message handler
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
   } catch (e) {
     debugPrint('Firebase not configured yet: $e');
   }
@@ -46,9 +57,14 @@ class ReddalertApp extends StatelessWidget {
 }
 
 /// Wrapper that shows login or home based on auth state
-class AuthWrapper extends StatelessWidget {
+class AuthWrapper extends StatefulWidget {
   const AuthWrapper({super.key});
 
+  @override
+  State<AuthWrapper> createState() => _AuthWrapperState();
+}
+
+class _AuthWrapperState extends State<AuthWrapper> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
@@ -66,9 +82,20 @@ class AuthWrapper extends StatelessWidget {
           return const LoginScreen();
         }
 
+        // Initialize notifications when user is authenticated
+        _initializeNotifications();
+
         // Show home if authenticated
         return const HomeScreen();
       },
     );
+  }
+
+  Future<void> _initializeNotifications() async {
+    try {
+      await NotificationService.initialize();
+    } catch (e) {
+      debugPrint('Error initializing notifications: $e');
+    }
   }
 }
