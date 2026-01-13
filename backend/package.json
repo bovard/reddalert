@@ -1,0 +1,22 @@
+{
+  "name": "reddalert-functions",
+  "version": "1.0.0",
+  "description": "Firebase Cloud Functions for Reddalert - Reddit RSS monitoring",
+  "main": "index.js",
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
+  },
+  "engines": {
+    "node": "18"
+  },
+  "keywords": ["reddit", "notifications", "firebase"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.0.3",
+    "rss-parser": "^3.13.0"
+  }
+}
