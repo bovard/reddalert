@@ -18,7 +18,7 @@ process.env.FIREBASE_AUTH_EMULATOR_HOST = 'localhost:9099';
 
 // Initialize Firebase Admin with emulator settings
 admin.initializeApp({
-  projectId: 'reddalert-local',
+  projectId: 'reddalert-33f83',
 });
 
 const db = admin.firestore();
@@ -35,29 +35,6 @@ const ALL_SUBREDDITS = [
   'tabletopgaming',
 ];
 
-// Keywords for each filter type
-const FILTER_KEYWORDS = {
-  catan: ['catan', 'settler', 'settlers', 'catanuniverse', 'catan universe'],
-  twosheep: ['twosheep', 'two sheep', '2sheep', '2 sheep'],
-};
-
-/**
- * Check if post matches a filter
- */
-function postMatchesFilter(post, filterType, customKeywords = []) {
-  if (filterType === 'all') return true;
-  if (filterType === 'none') return false;
-
-  const searchText = `${post.title} ${post.content}`.toLowerCase();
-
-  if (filterType === 'custom') {
-    return customKeywords.some((kw) => searchText.includes(kw.toLowerCase()));
-  }
-
-  const keywords = FILTER_KEYWORDS[filterType] || [];
-  return keywords.some((kw) => searchText.includes(kw.toLowerCase()));
-}
-
 /**
  * Fetch posts from a subreddit's RSS feed
  */
@@ -69,133 +46,57 @@ async function fetchSubredditPosts(subreddit) {
     redditId: item.id || item.guid || item.link,
     title: item.title || '',
     url: item.link || '',
+    permalink: item.link || '',
     author: (item.author || item.creator || '').replace('/u/', ''),
     subreddit: subreddit,
     content: item.contentSnippet || item.content || '',
-    redditCreatedAt: item.pubDate ? new Date(item.pubDate) : new Date(),
+    createdAt: item.pubDate ? new Date(item.pubDate) : new Date(),
   }));
 }
 
 /**
- * Process posts for a single user based on their subscriptions
- */
-async function processUserPosts(userId, postsBySubreddit) {
-  // Get user's subscriptions from settings document
-  const settingsDoc = await db
-    .collection('users')
-    .doc(userId)
-    .collection('settings')
-    .doc('subscriptions')
-    .get();
-
-  let subscriptions = [];
-  if (settingsDoc.exists) {
-    subscriptions = settingsDoc.data().subscriptions || [];
-  } else {
-    // Use default subscriptions if none set
-    subscriptions = [
-      { subreddit: 'Catan', showFilter: 'all', notifyFilter: 'none' },
-      { subreddit: 'SettlersofCatan', showFilter: 'all', notifyFilter: 'none' },
-      { subreddit: 'CatanUniverse', showFilter: 'all', notifyFilter: 'none' },
-      { subreddit: 'Colonist', showFilter: 'all', notifyFilter: 'none' },
-      { subreddit: 'twosheep', showFilter: 'all', notifyFilter: 'none' },
-      { subreddit: 'boardgames', showFilter: 'catan', notifyFilter: 'none' },
-      { subreddit: 'tabletopgaming', showFilter: 'catan', notifyFilter: 'none' },
-    ];
-  }
-
-  if (subscriptions.length === 0) {
-    console.log(`  No subscriptions for user ${userId}`);
-    return;
-  }
-
-  const userPostsRef = db.collection('users').doc(userId).collection('posts');
-  let addedCount = 0;
-
-  for (const subscription of subscriptions) {
-    const subreddit = subscription.subreddit.toLowerCase();
-    const posts = postsBySubreddit[subreddit] || [];
-
-    for (const post of posts) {
-      // Check if post matches show filter
-      const shouldShow = postMatchesFilter(
-        post,
-        subscription.showFilter,
-        subscription.customKeywords
-      );
-
-      if (!shouldShow) continue;
-
-      // Check if post already exists
-      const existingQuery = await userPostsRef
-        .where('redditId', '==', post.redditId)
-        .limit(1)
-        .get();
-
-      if (existingQuery.empty) {
-        // Add post to user's queue
-        await userPostsRef.add({
-          ...post,
-          redditCreatedAt: admin.firestore.Timestamp.fromDate(post.redditCreatedAt),
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          status: 'new',
-          statusUpdatedAt: null,
-        });
-        addedCount++;
-      }
-    }
-  }
-
-  if (addedCount > 0) {
-    console.log(`  Added ${addedCount} new posts for user ${userId}`);
-  }
-}
-
-/**
- * Main scheduled function: Check Reddit feeds
+ * Main scheduled function: Check Reddit feeds and save to shared collection
  */
 async function checkRedditFeeds() {
   console.log('\n[checkRedditFeeds] Starting Reddit feed check...');
   const startTime = Date.now();
 
   try {
-    // Fetch posts from all subreddits
-    const postsBySubreddit = {};
+    let totalAdded = 0;
 
     for (const subreddit of ALL_SUBREDDITS) {
       try {
         const posts = await fetchSubredditPosts(subreddit);
-        postsBySubreddit[subreddit.toLowerCase()] = posts;
         console.log(`  Fetched ${posts.length} posts from r/${subreddit}`);
+
+        // Save posts to shared collection
+        for (const post of posts) {
+          const postRef = db.collection('posts').doc(post.redditId);
+          const existing = await postRef.get();
+
+          if (!existing.exists) {
+            await postRef.set({
+              ...post,
+              createdAt: admin.firestore.Timestamp.fromDate(post.createdAt),
+              fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            totalAdded++;
+          }
+        }
       } catch (error) {
         console.error(`  Error fetching r/${subreddit}:`, error.message);
       }
     }
 
-    // Get all users
-    const usersSnapshot = await db.collection('users').get();
-
-    if (usersSnapshot.empty) {
-      console.log('  No users found');
-      return;
-    }
-
-    console.log(`  Processing posts for ${usersSnapshot.size} users`);
-
-    // Process each user
-    for (const userDoc of usersSnapshot.docs) {
-      await processUserPosts(userDoc.id, postsBySubreddit);
-    }
-
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`[checkRedditFeeds] Complete in ${duration}s`);
+    console.log(`[checkRedditFeeds] Complete in ${duration}s. Added ${totalAdded} new posts.`);
   } catch (error) {
     console.error('[checkRedditFeeds] Error:', error);
   }
 }
 
 /**
- * Cleanup old posts (normally runs daily)
+ * Cleanup old posts from shared collection (normally runs daily)
  */
 async function cleanupOldPosts() {
   console.log('\n[cleanupOldPosts] Starting cleanup...');
@@ -204,32 +105,52 @@ async function cleanupOldPosts() {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const usersSnapshot = await db.collection('users').get();
-    let totalDeleted = 0;
+    // Delete old posts from shared collection
+    const oldPostsQuery = await db
+      .collection('posts')
+      .where('fetchedAt', '<', admin.firestore.Timestamp.fromDate(thirtyDaysAgo))
+      .get();
 
-    for (const userDoc of usersSnapshot.docs) {
-      const oldPostsQuery = await db
-        .collection('users')
-        .doc(userDoc.id)
-        .collection('posts')
-        .where('createdAt', '<', admin.firestore.Timestamp.fromDate(thirtyDaysAgo))
-        .get();
+    const deletedPostIds = [];
+    const batch = db.batch();
 
-      const batch = db.batch();
-      let deleteCount = 0;
+    oldPostsQuery.docs.forEach((doc) => {
+      batch.delete(doc.ref);
+      deletedPostIds.push(doc.id);
+    });
 
-      oldPostsQuery.docs.forEach((doc) => {
-        batch.delete(doc.ref);
-        deleteCount++;
-      });
+    if (deletedPostIds.length > 0) {
+      await batch.commit();
+      console.log(`  Deleted ${deletedPostIds.length} old posts from shared collection`);
 
-      if (deleteCount > 0) {
-        await batch.commit();
-        totalDeleted += deleteCount;
+      // Clean up postStatus documents for deleted posts
+      const usersSnapshot = await db.collection('users').get();
+
+      for (const userDoc of usersSnapshot.docs) {
+        const statusBatch = db.batch();
+        let statusDeleteCount = 0;
+
+        for (const postId of deletedPostIds) {
+          const statusRef = db
+            .collection('users')
+            .doc(userDoc.id)
+            .collection('postStatus')
+            .doc(postId);
+          statusBatch.delete(statusRef);
+          statusDeleteCount++;
+        }
+
+        if (statusDeleteCount > 0) {
+          await statusBatch.commit();
+        }
       }
+
+      console.log('  Cleaned up user postStatus documents');
+    } else {
+      console.log('  No old posts to delete');
     }
 
-    console.log(`[cleanupOldPosts] Deleted ${totalDeleted} old posts`);
+    console.log('[cleanupOldPosts] Complete');
   } catch (error) {
     console.error('[cleanupOldPosts] Error:', error);
   }
@@ -262,6 +183,8 @@ function startScheduler() {
   console.log('');
   console.log('Monitored subreddits:');
   ALL_SUBREDDITS.forEach(sub => console.log(`  - r/${sub}`));
+  console.log('');
+  console.log('Posts are saved to shared collection (no per-user duplication)');
   console.log('');
   console.log('Press Ctrl+C to stop');
   console.log('-------------------------------------------');

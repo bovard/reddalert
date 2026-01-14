@@ -8,23 +8,15 @@ import type { Messaging } from 'firebase/messaging';
 // Use emulators in development
 const USE_EMULATORS = import.meta.env.DEV;
 
-// Firebase config - in dev mode we use a dummy config for emulators
-// In production, replace with your actual Firebase config
-const firebaseConfig = USE_EMULATORS ? {
-  apiKey: 'fake-api-key-for-emulator',
+// Firebase config - same config for dev (emulators) and production
+// Note: These are client-side identifiers, not secrets
+const firebaseConfig = {
+  apiKey: 'AIzaSyA4k2VVdmPwvHgtKHc-OCLytJDcgMDMbr4',
   authDomain: 'reddalert-33f83.firebaseapp.com',
   projectId: 'reddalert-33f83',
-  storageBucket: 'reddalert-33f83.appspot.com',
-  messagingSenderId: '000000000000',
-  appId: '1:000000000000:web:0000000000000000000000',
-} : {
-  // TODO: Replace with production config from Firebase console
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  storageBucket: 'reddalert-33f83.firebasestorage.app',
+  messagingSenderId: '1072736951904',
+  appId: '1:1072736951904:web:aff58df51d3f8499096d05',
 };
 
 const app = initializeApp(firebaseConfig);

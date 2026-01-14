@@ -1,5 +1,59 @@
 @import "tailwindcss";
 
+/* Material Design 3 Dark Theme Tokens */
+:root {
+  /* Primary (Red) */
+  --md-primary: #FFB4AB;
+  --md-on-primary: #690005;
+  --md-primary-container: #93000A;
+  --md-on-primary-container: #FFDAD6;
+
+  /* Secondary */
+  --md-secondary: #E7BDB8;
+  --md-on-secondary: #442926;
+  --md-secondary-container: #5D3F3C;
+  --md-on-secondary-container: #FFDAD6;
+
+  /* Tertiary (Green for success states) */
+  --md-tertiary: #7FDA8E;
+  --md-on-tertiary: #003919;
+  --md-tertiary-container: #005228;
+  --md-on-tertiary-container: #9AF6A8;
+
+  /* Error */
+  --md-error: #FFB4AB;
+  --md-on-error: #690005;
+  --md-error-container: #93000A;
+  --md-on-error-container: #FFDAD6;
+
+  /* Background & Surface */
+  --md-background: #1A1110;
+  --md-on-background: #F1DFDC;
+  --md-surface: #1A1110;
+  --md-on-surface: #F1DFDC;
+
+  /* Surface Containers (MD3 tonal elevation) */
+  --md-surface-dim: #1A1110;
+  --md-surface-bright: #423735;
+  --md-surface-container-lowest: #140C0B;
+  --md-surface-container-low: #231918;
+  --md-surface-container: #271D1C;
+  --md-surface-container-high: #322826;
+  --md-surface-container-highest: #3D3231;
+
+  /* Outline */
+  --md-outline: #A08C89;
+  --md-outline-variant: #534341;
+
+  /* Inverse */
+  --md-inverse-surface: #F1DFDC;
+  --md-inverse-on-surface: #382E2D;
+  --md-inverse-primary: #C00011;
+
+  /* Surface Tint */
+  --md-surface-tint: #FFB4AB;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -7,12 +61,137 @@
 }
 
 html {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Roboto', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--md-background);
+  color: var(--md-on-background);
+}
+
+/* Material Design 3 Components */
+.md-surface {
+  background-color: var(--md-surface-container);
+  border-radius: 12px;
+}
+
+.md-surface-low {
+  background-color: var(--md-surface-container-low);
+  border-radius: 12px;
+}
+
+.md-surface-high {
+  background-color: var(--md-surface-container-high);
+  border-radius: 12px;
+}
+
+.md-surface-highest {
+  background-color: var(--md-surface-container-highest);
+  border-radius: 16px;
+}
+
+/* Elevation shadows with surface tint */
+.md-elevation-1 {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px 1px rgba(0, 0, 0, 0.15);
+}
+
+.md-elevation-2 {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+}
+
+.md-elevation-3 {
+  box-shadow: 0 4px 8px 3px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Material ripple effect placeholder */
+.md-ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.md-ripple::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+
+.md-ripple:hover::after {
+  opacity: 0.08;
+}
+
+.md-ripple:active::after {
+  opacity: 0.12;
+}
+
+/* State layer for interactive elements */
+.md-state-layer {
+  position: relative;
+}
+
+.md-state-layer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+  pointer-events: none;
+}
+
+.md-state-layer:hover::before {
+  opacity: 0.08;
+}
+
+.md-state-layer:focus-visible::before {
+  opacity: 0.12;
+}
+
+.md-state-layer:active::before {
+  opacity: 0.12;
 }
 
 /* Safe area padding for mobile devices */
 .safe-area-pb {
   padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Responsive sidebar layout - matches Tailwind's md breakpoint (48rem = 768px) */
+.sidebar-offset {
+  margin-left: 0;
+}
+
+@media (min-width: 48rem) {
+  .sidebar-offset {
+    margin-left: 256px;
+  }
+}
+
+/* Focus visible outline */
+:focus-visible {
+  outline: 2px solid var(--md-primary);
+  outline-offset: 2px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--md-surface-container-low);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--md-outline-variant);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--md-outline);
 }

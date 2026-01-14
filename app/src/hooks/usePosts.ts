@@ -2,21 +2,31 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   collection,
   query,
-  where,
   orderBy,
   onSnapshot,
   doc,
-  updateDoc,
   getDoc,
   setDoc,
+  deleteDoc,
   Timestamp,
   increment,
+  limit,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import type { Post, PostStatus } from '../types';
 import { useEffect, useState } from 'react';
 
-function convertPost(docData: Record<string, unknown>, id: string): Post {
+interface PostStatusDoc {
+  status: PostStatus;
+  statusUpdatedAt?: Timestamp;
+  respondedAt?: Timestamp;
+}
+
+function convertPost(
+  docData: Record<string, unknown>,
+  id: string,
+  statusData?: PostStatusDoc
+): Post {
   return {
     id,
     redditId: docData.redditId as string,
@@ -27,13 +37,9 @@ function convertPost(docData: Record<string, unknown>, id: string): Post {
     permalink: docData.permalink as string,
     createdAt: (docData.createdAt as Timestamp).toDate(),
     fetchedAt: (docData.fetchedAt as Timestamp).toDate(),
-    status: docData.status as PostStatus,
-    statusUpdatedAt: docData.statusUpdatedAt
-      ? (docData.statusUpdatedAt as Timestamp).toDate()
-      : undefined,
-    respondedAt: docData.respondedAt
-      ? (docData.respondedAt as Timestamp).toDate()
-      : undefined,
+    status: statusData?.status || 'new',
+    statusUpdatedAt: statusData?.statusUpdatedAt?.toDate(),
+    respondedAt: statusData?.respondedAt?.toDate(),
   };
 }
 
@@ -48,25 +54,76 @@ export function usePosts(userId: string | undefined, status: PostStatus) {
       return;
     }
 
-    const postsRef = collection(db, 'users', userId, 'posts');
-    const q = query(
-      postsRef,
-      where('status', '==', status),
-      orderBy('createdAt', 'desc')
+    // Store data from both subscriptions
+    let sharedPosts: Map<string, Record<string, unknown>> = new Map();
+    let userStatuses: Map<string, PostStatusDoc> = new Map();
+    let postsLoaded = false;
+    let statusesLoaded = false;
+
+    const updatePosts = () => {
+      if (!postsLoaded || !statusesLoaded) return;
+
+      const combined: Post[] = [];
+
+      sharedPosts.forEach((postData, postId) => {
+        const postStatus = userStatuses.get(postId);
+        const effectiveStatus = postStatus?.status || 'new';
+
+        // Filter based on requested status
+        if (effectiveStatus === status) {
+          combined.push(convertPost(postData, postId, postStatus));
+        }
+      });
+
+      // Sort by createdAt descending
+      combined.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+      setPosts(combined);
+      setLoading(false);
+    };
+
+    // Subscribe to shared posts collection (limit to recent posts)
+    const postsRef = collection(db, 'posts');
+    const postsQuery = query(postsRef, orderBy('createdAt', 'desc'), limit(100));
+
+    const unsubscribePosts = onSnapshot(
+      postsQuery,
+      (snapshot) => {
+        sharedPosts = new Map();
+        snapshot.docs.forEach((doc) => {
+          sharedPosts.set(doc.id, doc.data());
+        });
+        postsLoaded = true;
+        updatePosts();
+      },
+      (error) => {
+        console.error('Error fetching posts:', error);
+        setLoading(false);
+      }
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const newPosts = snapshot.docs.map((doc) =>
-        convertPost(doc.data(), doc.id)
-      );
-      setPosts(newPosts);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching posts:', error);
-      setLoading(false);
-    });
+    // Subscribe to user's postStatus collection
+    const statusRef = collection(db, 'users', userId, 'postStatus');
+    const unsubscribeStatus = onSnapshot(
+      statusRef,
+      (snapshot) => {
+        userStatuses = new Map();
+        snapshot.docs.forEach((doc) => {
+          userStatuses.set(doc.id, doc.data() as PostStatusDoc);
+        });
+        statusesLoaded = true;
+        updatePosts();
+      },
+      (error) => {
+        console.error('Error fetching post statuses:', error);
+        setLoading(false);
+      }
+    );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribePosts();
+      unsubscribeStatus();
+    };
   }, [userId, status]);
 
   return { posts, loading };
@@ -76,40 +133,53 @@ export function useUpdatePostStatus(userId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ postId, status }: { postId: string; status: PostStatus }) => {
+    mutationFn: async ({
+      postId,
+      status,
+    }: {
+      postId: string;
+      status: PostStatus;
+    }) => {
       if (!userId) throw new Error('User not authenticated');
 
-      const postRef = doc(db, 'users', userId, 'posts', postId);
+      const statusRef = doc(db, 'users', userId, 'postStatus', postId);
       const statsRef = doc(db, 'users', userId, 'settings', 'stats');
 
-      // Get current post to check if we're changing from/to responded
-      const postDoc = await getDoc(postRef);
-      const currentStatus = postDoc.exists() ? postDoc.data().status : null;
+      // Get current status to check if we're changing from/to responded
+      const statusDoc = await getDoc(statusRef);
+      const currentStatus = statusDoc.exists()
+        ? (statusDoc.data().status as PostStatus)
+        : 'new';
 
-      const updateData: Record<string, unknown> = {
-        status,
-        statusUpdatedAt: Timestamp.now(),
-      };
+      if (status === 'new') {
+        // Delete the status document to make it "new" again
+        if (statusDoc.exists()) {
+          await deleteDoc(statusRef);
+        }
+      } else {
+        // Set the new status
+        const updateData: Record<string, unknown> = {
+          status,
+          statusUpdatedAt: Timestamp.now(),
+        };
 
-      // If marking as responded, set respondedAt
-      if (status === 'responded') {
-        updateData.respondedAt = Timestamp.now();
+        if (status === 'responded') {
+          updateData.respondedAt = Timestamp.now();
+        }
+
+        await setDoc(statusRef, updateData, { merge: true });
       }
-
-      await updateDoc(postRef, updateData);
 
       // Update response counter
       if (status === 'responded' && currentStatus !== 'responded') {
-        // Incrementing response count
         const statsDoc = await getDoc(statsRef);
         if (statsDoc.exists()) {
-          await updateDoc(statsRef, { totalResponses: increment(1) });
+          await setDoc(statsRef, { totalResponses: increment(1) }, { merge: true });
         } else {
           await setDoc(statsRef, { totalResponses: 1 });
         }
       } else if (status !== 'responded' && currentStatus === 'responded') {
-        // Decrementing response count (user unmarked as responded)
-        await updateDoc(statsRef, { totalResponses: increment(-1) });
+        await setDoc(statsRef, { totalResponses: increment(-1) }, { merge: true });
       }
     },
     onSuccess: () => {
@@ -137,17 +207,21 @@ export function useUserStats(userId: string | undefined) {
 
     const statsRef = doc(db, 'users', userId, 'settings', 'stats');
 
-    const unsubscribe = onSnapshot(statsRef, (snapshot) => {
-      if (snapshot.exists()) {
-        setStats(snapshot.data() as { totalResponses: number });
-      } else {
-        setStats({ totalResponses: 0 });
+    const unsubscribe = onSnapshot(
+      statsRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          setStats(snapshot.data() as { totalResponses: number });
+        } else {
+          setStats({ totalResponses: 0 });
+        }
+        setLoading(false);
+      },
+      (error) => {
+        console.error('Error fetching stats:', error);
+        setLoading(false);
       }
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching stats:', error);
-      setLoading(false);
-    });
+    );
 
     return () => unsubscribe();
   }, [userId]);

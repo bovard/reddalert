@@ -36,21 +36,29 @@ export function ResponseChart({ data, height = 120 }: ResponseChartProps) {
               style={{ height: '100%' }}
             >
               {/* Tooltip */}
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-700 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 pointer-events-none">
+              <div
+                className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 pointer-events-none md-elevation-2"
+                style={{
+                  backgroundColor: 'var(--md-inverse-surface)',
+                  color: 'var(--md-inverse-on-surface)',
+                }}
+              >
                 {formatDate(day.date)}: {day.count} response{day.count !== 1 ? 's' : ''}
               </div>
 
               {/* Bar */}
               <div className="w-full h-full flex items-end">
                 <div
-                  className={`w-full rounded-t transition-all ${
-                    isToday
-                      ? 'bg-green-500'
+                  className="w-full rounded-t transition-all"
+                  style={{
+                    height: `${barHeight}%`,
+                    backgroundColor: isToday
+                      ? 'var(--md-tertiary)'
                       : day.count > 0
-                      ? 'bg-green-600'
-                      : 'bg-gray-700'
-                  } ${day.count > 0 ? 'min-h-[2px]' : ''}`}
-                  style={{ height: `${barHeight}%` }}
+                      ? 'var(--md-primary)'
+                      : 'var(--md-surface-container-lowest)',
+                    minHeight: day.count > 0 ? '2px' : undefined,
+                  }}
                 />
               </div>
             </div>
@@ -59,7 +67,7 @@ export function ResponseChart({ data, height = 120 }: ResponseChartProps) {
       </div>
 
       {/* X-axis labels */}
-      <div className="flex mt-2 text-xs text-gray-500">
+      <div className="flex mt-2 text-xs" style={{ color: 'var(--md-on-surface-variant, #D0C4C2)' }}>
         {data.map((day, index) => (
           <div key={day.date} className="flex-1 text-center">
             {showLabel(index) && (
