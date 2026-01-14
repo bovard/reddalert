@@ -1,0 +1,24 @@
+{
+  "name": "reddalert",
+  "version": "1.0.0",
+  "description": "Reddit post queue app for Catan subreddits",
+  "scripts": {
+    "firebase": "firebase emulators:start",
+    "firebase:kill": "lsof -ti:8080,9099,5001,5000,4000 | xargs kill -9 2>/dev/null || true",
+    "firebase:restart": "npm run firebase:kill && npm run firebase",
+    "scheduler": "node scripts/localScheduler.js",
+    "deploy:functions": "cd backend && firebase deploy --only functions",
+    "deploy:hosting": "cd app && flutter build web && cd .. && firebase deploy --only hosting",
+    "deploy": "npm run deploy:functions && npm run deploy:hosting"
+  },
+  "keywords": ["reddit", "catan", "firebase", "flutter"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "firebase-tools": "^13.0.0"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0",
+    "rss-parser": "^3.13.0"
+  }
+}

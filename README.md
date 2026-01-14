@@ -10,52 +10,87 @@ A post queue app for Catan subreddits. Stay on top of discussions, take action, 
 
 ## Monitored Subreddits
 
-- r/Catan
-- r/SettlersofCatan
-- r/CatanUniverse
-- r/Colonist
-- r/twosheep
+| Category | Subreddits | Default Filter |
+|----------|------------|----------------|
+| Catan Core | Catan, SettlersofCatan, CatanUniverse | All posts |
+| Online Platforms | Colonist, twosheep | All posts |
+| Board Games | boardgames, tabletopgaming | Catan mentions only |
 
 ## Features
 
 - **Google Sign-In** - Authenticate with your Gmail account
-- **Post Queue** - New posts from Catan subreddits appear in your queue
+- **Configurable Subscriptions** - Choose which subreddits to monitor
+- **Filter Options** - All posts, Catan mentions, TwoSheep mentions, or None
+- **Push Notifications** - Get notified for posts matching your criteria
+- **Post Queue** - New posts appear in your queue
 - **Swipe Actions** - Swipe left to dismiss, swipe right to mark as done
 - **Open in Reddit** - Tap a post to open it in Reddit and comment
 - **History** - View all posts you've marked as done
 
-## How It Works
-
-1. Sign in with Google
-2. Cloud Function runs every 15 minutes, fetching new posts from all subreddits
-3. New posts are added to each user's queue in Firestore
-4. Open the app to see your queue of new posts
-5. Tap to open in Reddit, swipe to dismiss or mark done
-6. View your history of completed posts
-
-## Architecture
-
-```
-reddalert/
-├── app/                    # Flutter app (Web, Android, iOS)
-│   └── lib/
-│       ├── main.dart       # Entry point with auth wrapper
-│       ├── models/         # Data models (Post)
-│       ├── screens/        # UI screens (Login, Posts, History)
-│       ├── services/       # Firebase services (Auth, Posts)
-│       └── widgets/        # Reusable widgets (PostCard)
-└── backend/                # Firebase Cloud Functions
-    └── index.js            # RSS polling & post distribution
-```
-
-## Setup
+## Local Development
 
 ### Prerequisites
 
 - Flutter SDK
 - Node.js 18+
 - Firebase CLI (`npm install -g firebase-tools`)
-- A Firebase project with Blaze plan
+
+### Quick Start
+
+```bash
+# Install dependencies
+npm install
+cd backend && npm install && cd ..
+
+# Terminal 1: Start Firebase emulators
+npm run firebase
+
+# Terminal 2: Seed a test user (run once)
+node scripts/seedTestUser.js
+
+# Terminal 2: Start the local scheduler
+npm run scheduler
+
+# Terminal 3: Run Flutter web
+cd app && flutter run -d chrome
+```
+
+### Local Development Scripts
+
+| Script | Description |
+|--------|-------------|
+| `npm run firebase` | Start Firebase emulators |
+| `npm run firebase:kill` | Kill all emulator processes |
+| `npm run firebase:restart` | Kill and restart emulators |
+| `npm run scheduler` | Run the scheduled function locally |
+| `node scripts/seedTestUser.js` | Create a test user in emulators |
+
+### Emulator URLs
+
+| Service | URL |
+|---------|-----|
+| Emulator UI | http://localhost:4000 |
+| Firestore | http://localhost:8080 |
+| Auth | http://localhost:9099 |
+| Functions | http://localhost:5001 |
+| Hosting | http://localhost:5000 |
+
+### How Local Development Works
+
+1. **Firebase Emulators** provide local Firestore, Auth, and Functions
+2. **Local Scheduler** (`scripts/localScheduler.js`) simulates the scheduled Cloud Function that polls Reddit RSS feeds
+3. **Seed Script** creates a test user with default subscriptions
+4. **Flutter Web** connects to emulators (when configured)
+
+The scheduler runs every 60 seconds locally (vs 15 minutes in production) for faster testing.
+
+## Production Setup
+
+### Prerequisites
+
+- Firebase project with Blaze plan
+- Flutter SDK
+- Firebase CLI
 
 ### 1. Configure Firebase
 
@@ -76,26 +111,36 @@ Select your Firebase project and enable Android, iOS, and Web.
 2. Enable Google provider
 3. Add your OAuth client IDs for Android/iOS/Web
 
-### 3. Deploy Cloud Functions
+### 3. Deploy
 
 ```bash
-cd backend
-firebase deploy --only functions
+# Deploy everything
+npm run deploy
+
+# Or deploy individually
+npm run deploy:functions
+npm run deploy:hosting
 ```
 
-### 4. Deploy Web App
+## Architecture
 
-```bash
-cd app
-flutter build web
-firebase deploy --only hosting
 ```
-
-### 5. Run Mobile App
-
-```bash
-cd app
-flutter run
+reddalert/
+├── app/                    # Flutter app (Web, Android, iOS)
+│   └── lib/
+│       ├── main.dart       # Entry point with auth wrapper
+│       ├── models/         # Data models (Post, Subscription)
+│       ├── screens/        # UI screens (Login, Posts, History, Settings)
+│       ├── services/       # Firebase services (Auth, Posts, Subscriptions)
+│       └── widgets/        # Reusable widgets (PostCard)
+├── backend/                # Firebase Cloud Functions
+│   └── index.js            # RSS polling & post distribution
+├── scripts/                # Local development scripts
+│   ├── localScheduler.js   # Simulates scheduled functions locally
+│   └── seedTestUser.js     # Creates test user in emulators
+├── firebase.json           # Firebase configuration
+├── firestore.rules         # Firestore security rules
+└── firestore.indexes.json  # Firestore indexes
 ```
 
 ## Firestore Structure
@@ -107,6 +152,15 @@ users/
     displayName: string
     photoURL: string
     createdAt: timestamp
+    fcmTokens: string[]
+
+    subscriptions/
+      {subreddit}/
+        showFilter: "all" | "catan" | "twosheep" | "custom" | "none"
+        notifyFilter: "all" | "catan" | "twosheep" | "custom" | "none"
+        customKeywords: string[]
+        enabled: boolean
+
     posts/
       {postId}/
         redditId: string
@@ -125,11 +179,12 @@ users/
 
 | Function | Trigger | Description |
 |----------|---------|-------------|
-| `checkRedditFeeds` | Every 15 min | Polls RSS feeds, adds new posts to user queues |
-| `onUserCreate` | Auth | Creates user doc, populates initial posts |
+| `checkRedditFeeds` | Every 15 min | Polls RSS feeds, adds posts based on user subscriptions |
+| `onUserCreate` | Auth | Creates user doc with default subscriptions |
 | `updatePostStatus` | Callable | Updates post status (new/dismissed/done) |
 | `restorePost` | Callable | Restores post to "new" status |
 | `cleanupOldPosts` | Daily | Removes posts older than 30 days |
+| `saveFcmToken` | Callable | Saves FCM token for push notifications |
 | `manualCheck` | HTTP | Manually trigger feed check (for testing) |
 
 ## Limitations
