@@ -1,9 +1,21 @@
+import { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { useSubscriptions, useUpdateSubscriptions } from '../hooks/useSubscriptions';
 import { useAuth } from '../hooks/useAuth';
 import { SUBREDDITS } from '../types';
 import type { FilterType, Subscription } from '../types';
-import { Loader2, Bell, Eye } from 'lucide-react';
+import { Loader2, Bell, Eye, Download, Smartphone } from 'lucide-react';
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
+
+declare global {
+  interface WindowEventMap {
+    beforeinstallprompt: BeforeInstallPromptEvent;
+  }
+}
 
 const FILTER_OPTIONS: { value: FilterType; label: string }[] = [
   { value: 'all', label: 'All posts' },
@@ -87,6 +99,103 @@ function SubredditRow({ subscription, onUpdate }: SubredditRowProps) {
   );
 }
 
+function InstallSection() {
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+
+  useEffect(() => {
+    // Check if already installed
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setIsInstalled(true);
+      return;
+    }
+
+    // Check if iOS
+    const isIOSDevice = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    setIsIOS(isIOSDevice);
+
+    // Listen for install prompt (Android/Desktop Chrome)
+    const handler = (e: BeforeInstallPromptEvent) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  const handleInstall = async () => {
+    if (!deferredPrompt) return;
+    await deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setIsInstalled(true);
+    }
+    setDeferredPrompt(null);
+  };
+
+  if (isInstalled) {
+    return (
+      <div
+        className="rounded-2xl p-4 sm:p-5 md-elevation-1 mb-8"
+        style={{ backgroundColor: 'var(--md-surface-container-high)' }}
+      >
+        <div className="flex items-center gap-3">
+          <Smartphone className="w-5 h-5" style={{ color: 'var(--md-primary)' }} />
+          <span style={{ color: 'var(--md-on-surface)' }}>App installed</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <section className="mb-8">
+      <h2
+        className="text-base sm:text-lg font-medium mb-4"
+        style={{ color: 'var(--md-primary)' }}
+      >
+        Install App
+      </h2>
+      <div
+        className="rounded-2xl p-4 sm:p-5 md-elevation-1"
+        style={{ backgroundColor: 'var(--md-surface-container-high)' }}
+      >
+        {deferredPrompt ? (
+          <button
+            onClick={handleInstall}
+            className="flex items-center gap-3 w-full text-left"
+          >
+            <Download className="w-5 h-5" style={{ color: 'var(--md-primary)' }} />
+            <span style={{ color: 'var(--md-on-surface)' }}>Install Reddalert</span>
+          </button>
+        ) : isIOS ? (
+          <div>
+            <p className="text-sm mb-3" style={{ color: 'var(--md-on-surface)' }}>
+              To install on iOS:
+            </p>
+            <ol className="text-sm space-y-2" style={{ color: 'var(--md-on-surface-variant)' }}>
+              <li>1. Tap the Share button <span className="inline-block px-1.5 py-0.5 rounded text-xs" style={{ backgroundColor: 'var(--md-surface-container-highest)' }}>&#x2B07;&#xFE0F;</span></li>
+              <li>2. Scroll down and tap "Add to Home Screen"</li>
+              <li>3. Tap "Add" in the top right</li>
+            </ol>
+          </div>
+        ) : (
+          <div>
+            <p className="text-sm mb-3" style={{ color: 'var(--md-on-surface)' }}>
+              To install on Android:
+            </p>
+            <ol className="text-sm space-y-2" style={{ color: 'var(--md-on-surface-variant)' }}>
+              <li>1. Tap the menu button (three dots)</li>
+              <li>2. Tap "Add to Home Screen" or "Install app"</li>
+            </ol>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function SettingsPage() {
   const { user } = useAuth();
   const { subscriptions, loading } = useSubscriptions(user?.uid);
@@ -121,6 +230,8 @@ export function SettingsPage() {
 
   return (
     <Layout title="Settings">
+      <InstallSection />
+
       <section className="mb-8">
         <h2
           className="text-base sm:text-lg font-medium mb-4"

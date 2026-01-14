@@ -8,7 +8,11 @@ const Parser = require("rss-parser");
 admin.initializeApp();
 
 const db = getFirestore();
-const parser = new Parser();
+const parser = new Parser({
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  },
+});
 
 // All available subreddits to monitor
 const ALL_SUBREDDITS = [
@@ -119,7 +123,7 @@ exports.getPostDetails = onCall(async (request) => {
       `https://www.reddit.com/r/${subreddit}/comments/${postId}.json`,
       {
         headers: {
-          "User-Agent": "Reddalert/1.0 (Firebase Cloud Function)",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         },
       }
     );
