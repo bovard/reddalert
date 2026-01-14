@@ -1,26 +1,11 @@
 {
   "indexes": [
     {
-      "collectionGroup": "posts",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "redditCreatedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "posts",
+      "collectionGroup": "postStatus",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "statusUpdatedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "enabled", "order": "ASCENDING" }
       ]
     }
   ],

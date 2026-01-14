@@ -1,7 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, connectAuthEmulator, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
-import { getFunctions, connectFunctionsEmulator, httpsCallable } from 'firebase/functions';
+import { getFirestore, connectFirestoreEmulator, doc, getDoc, setDoc, arrayUnion } from 'firebase/firestore';
+import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 import { getMessaging, getToken, onMessage, isSupported } from 'firebase/messaging';
 import type { Messaging } from 'firebase/messaging';
 
@@ -12,9 +12,9 @@ const USE_EMULATORS = import.meta.env.DEV;
 // In production, replace with your actual Firebase config
 const firebaseConfig = USE_EMULATORS ? {
   apiKey: 'fake-api-key-for-emulator',
-  authDomain: 'reddalert-local.firebaseapp.com',
-  projectId: 'reddalert-local',
-  storageBucket: 'reddalert-local.appspot.com',
+  authDomain: 'reddalert-33f83.firebaseapp.com',
+  projectId: 'reddalert-33f83',
+  storageBucket: 'reddalert-33f83.appspot.com',
   messagingSenderId: '000000000000',
   appId: '1:000000000000:web:0000000000000000000000',
 } : {
@@ -36,7 +36,7 @@ export const functions = getFunctions(app);
 if (USE_EMULATORS) {
   connectAuthEmulator(auth, 'http://localhost:9099', { disableWarnings: true });
   connectFirestoreEmulator(db, 'localhost', 8080);
-  connectFunctionsEmulator(functions, 'localhost', 5001);
+  connectFunctionsEmulator(functions, 'localhost', 5003);
   console.log('Connected to Firebase emulators');
 }
 
@@ -103,8 +103,57 @@ export const requestNotificationPermission = async (): Promise<string | null> =>
 };
 
 export const saveFcmToken = async (token: string): Promise<void> => {
-  const saveFcmTokenFn = httpsCallable(functions, 'saveFcmToken');
-  await saveFcmTokenFn({ token });
+  const user = auth.currentUser;
+  if (!user) throw new Error('User not authenticated');
+
+  const userRef = doc(db, 'users', user.uid);
+
+  // Use setDoc with merge to handle cases where the document doesn't exist yet
+  await setDoc(userRef, {
+    fcmTokens: arrayUnion(token)
+  }, { merge: true });
+};
+
+export const getOrCreateProfile = async (): Promise<{ created: boolean; uid: string }> => {
+  const user = auth.currentUser;
+  if (!user) throw new Error('User not authenticated');
+
+  const uid = user.uid;
+  const userRef = doc(db, 'users', uid);
+  const userDoc = await getDoc(userRef);
+
+  if (userDoc.exists()) {
+    console.log(`User ${uid} already exists`);
+    return { created: false, uid };
+  }
+
+  console.log(`Creating new user profile for ${uid}`);
+
+  // Create user document
+  await setDoc(userRef, {
+    email: user.email || null,
+    displayName: user.displayName || null,
+    photoURL: user.photoURL || null,
+    createdAt: new Date(),
+    fcmTokens: [],
+  });
+
+  // Create default subscriptions
+  const defaultSubscriptions = [
+    { subreddit: "Catan", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "SettlersofCatan", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "CatanUniverse", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "Colonist", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "twosheep", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "boardgames", showFilter: "catan", notifyFilter: "none" },
+    { subreddit: "tabletopgaming", showFilter: "catan", notifyFilter: "none" },
+  ];
+
+  const subscriptionsRef = doc(db, 'users', uid, 'settings', 'subscriptions');
+  await setDoc(subscriptionsRef, { subscriptions: defaultSubscriptions });
+
+  console.log(`Created user profile and subscriptions for ${uid}`);
+  return { created: true, uid };
 };
 
 export const onForegroundMessage = (callback: (payload: unknown) => void) => {

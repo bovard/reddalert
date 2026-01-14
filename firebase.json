@@ -12,7 +12,7 @@
     "indexes": "firestore.indexes.json"
   },
   "hosting": {
-    "public": "app/build/web",
+    "public": "app/dist",
     "ignore": [
       "firebase.json",
       "**/.*",
@@ -30,13 +30,13 @@
       "port": 9099
     },
     "functions": {
-      "port": 5001
+      "port": 5003
     },
     "firestore": {
       "port": 8080
     },
     "hosting": {
-      "port": 5000
+      "port": 5001
     },
     "ui": {
       "enabled": true,
