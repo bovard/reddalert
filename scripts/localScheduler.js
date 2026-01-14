@@ -80,25 +80,40 @@ async function fetchSubredditPosts(subreddit) {
  * Process posts for a single user based on their subscriptions
  */
 async function processUserPosts(userId, postsBySubreddit) {
-  // Get user's subscriptions
-  const subscriptionsSnapshot = await db
+  // Get user's subscriptions from settings document
+  const settingsDoc = await db
     .collection('users')
     .doc(userId)
-    .collection('subscriptions')
-    .where('enabled', '==', true)
+    .collection('settings')
+    .doc('subscriptions')
     .get();
 
-  if (subscriptionsSnapshot.empty) {
-    console.log(`  No enabled subscriptions for user ${userId}`);
+  let subscriptions = [];
+  if (settingsDoc.exists) {
+    subscriptions = settingsDoc.data().subscriptions || [];
+  } else {
+    // Use default subscriptions if none set
+    subscriptions = [
+      { subreddit: 'Catan', showFilter: 'all', notifyFilter: 'none' },
+      { subreddit: 'SettlersofCatan', showFilter: 'all', notifyFilter: 'none' },
+      { subreddit: 'CatanUniverse', showFilter: 'all', notifyFilter: 'none' },
+      { subreddit: 'Colonist', showFilter: 'all', notifyFilter: 'none' },
+      { subreddit: 'twosheep', showFilter: 'all', notifyFilter: 'none' },
+      { subreddit: 'boardgames', showFilter: 'catan', notifyFilter: 'none' },
+      { subreddit: 'tabletopgaming', showFilter: 'catan', notifyFilter: 'none' },
+    ];
+  }
+
+  if (subscriptions.length === 0) {
+    console.log(`  No subscriptions for user ${userId}`);
     return;
   }
 
   const userPostsRef = db.collection('users').doc(userId).collection('posts');
   let addedCount = 0;
 
-  for (const subDoc of subscriptionsSnapshot.docs) {
-    const subscription = subDoc.data();
-    const subreddit = subDoc.id.toLowerCase();
+  for (const subscription of subscriptions) {
+    const subreddit = subscription.subreddit.toLowerCase();
     const posts = postsBySubreddit[subreddit] || [];
 
     for (const post of posts) {

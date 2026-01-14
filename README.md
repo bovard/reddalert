@@ -4,9 +4,7 @@ A post queue app for Catan subreddits. Stay on top of discussions, take action, 
 
 ## Platforms
 
-- Web (Firebase Hosting)
-- Android
-- iOS
+- Web (React + TypeScript, Firebase Hosting)
 
 ## Monitored Subreddits
 
@@ -31,7 +29,6 @@ A post queue app for Catan subreddits. Stay on top of discussions, take action, 
 
 ### Prerequisites
 
-- Flutter SDK
 - Node.js 18+
 - Firebase CLI (`npm install -g firebase-tools`)
 
@@ -40,6 +37,7 @@ A post queue app for Catan subreddits. Stay on top of discussions, take action, 
 ```bash
 # Install dependencies
 npm install
+cd app && npm install && cd ..
 cd backend && npm install && cd ..
 
 # Terminal 1: Start Firebase emulators
@@ -51,8 +49,8 @@ node scripts/seedTestUser.js
 # Terminal 2: Start the local scheduler
 npm run scheduler
 
-# Terminal 3: Run Flutter web
-cd app && flutter run -d chrome
+# Terminal 3: Run React app
+cd app && npm run dev
 ```
 
 ### Local Development Scripts
@@ -80,7 +78,7 @@ cd app && flutter run -d chrome
 1. **Firebase Emulators** provide local Firestore, Auth, and Functions
 2. **Local Scheduler** (`scripts/localScheduler.js`) simulates the scheduled Cloud Function that polls Reddit RSS feeds
 3. **Seed Script** creates a test user with default subscriptions
-4. **Flutter Web** connects to emulators (when configured)
+4. **React App** connects to emulators via environment configuration
 
 The scheduler runs every 60 seconds locally (vs 15 minutes in production) for faster testing.
 
@@ -89,7 +87,7 @@ The scheduler runs every 60 seconds locally (vs 15 minutes in production) for fa
 ### Prerequisites
 
 - Firebase project with Blaze plan
-- Flutter SDK
+- Node.js 18+
 - Firebase CLI
 
 ### 1. Configure Firebase
@@ -97,13 +95,9 @@ The scheduler runs every 60 seconds locally (vs 15 minutes in production) for fa
 ```bash
 # Login to Firebase
 firebase login
-
-# Configure Flutter app
-cd app
-flutterfire configure
 ```
 
-Select your Firebase project and enable Android, iOS, and Web.
+Create `app/.env` with your Firebase configuration (see app/README.md).
 
 ### 2. Enable Google Sign-In
 
@@ -126,13 +120,13 @@ npm run deploy:hosting
 
 ```
 reddalert/
-├── app/                    # Flutter app (Web, Android, iOS)
-│   └── lib/
-│       ├── main.dart       # Entry point with auth wrapper
-│       ├── models/         # Data models (Post, Subscription)
-│       ├── screens/        # UI screens (Login, Posts, History, Settings)
-│       ├── services/       # Firebase services (Auth, Posts, Subscriptions)
-│       └── widgets/        # Reusable widgets (PostCard)
+├── app/                    # React + TypeScript app (Vite)
+│   └── src/
+│       ├── components/     # Reusable UI components
+│       ├── hooks/          # Custom React hooks
+│       ├── pages/          # Page components
+│       ├── lib/            # Firebase configuration
+│       └── types/          # TypeScript types
 ├── backend/                # Firebase Cloud Functions
 │   └── index.js            # RSS polling & post distribution
 ├── scripts/                # Local development scripts

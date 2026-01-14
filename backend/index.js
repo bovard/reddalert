@@ -103,16 +103,32 @@ exports.checkRedditFeeds = functions.pubsub
  * Process posts for a single user based on their subscriptions
  */
 async function processUserPosts(userId, postsBySubreddit) {
-  // Get user's subscriptions
-  const subscriptionsSnapshot = await db
+  // Get user's subscriptions from settings document
+  const settingsDoc = await db
     .collection("users")
     .doc(userId)
-    .collection("subscriptions")
-    .where("enabled", "==", true)
+    .collection("settings")
+    .doc("subscriptions")
     .get();
 
-  if (subscriptionsSnapshot.empty) {
-    console.log(`No enabled subscriptions for user ${userId}`);
+  let subscriptions = [];
+  if (settingsDoc.exists) {
+    subscriptions = settingsDoc.data().subscriptions || [];
+  } else {
+    // Use default subscriptions if none set
+    subscriptions = [
+      { subreddit: "Catan", showFilter: "all", notifyFilter: "none" },
+      { subreddit: "SettlersofCatan", showFilter: "all", notifyFilter: "none" },
+      { subreddit: "CatanUniverse", showFilter: "all", notifyFilter: "none" },
+      { subreddit: "Colonist", showFilter: "all", notifyFilter: "none" },
+      { subreddit: "twosheep", showFilter: "all", notifyFilter: "none" },
+      { subreddit: "boardgames", showFilter: "catan", notifyFilter: "none" },
+      { subreddit: "tabletopgaming", showFilter: "catan", notifyFilter: "none" },
+    ];
+  }
+
+  if (subscriptions.length === 0) {
+    console.log(`No subscriptions for user ${userId}`);
     return;
   }
 
@@ -120,9 +136,8 @@ async function processUserPosts(userId, postsBySubreddit) {
   let addedCount = 0;
   const notificationsToSend = [];
 
-  for (const subDoc of subscriptionsSnapshot.docs) {
-    const subscription = subDoc.data();
-    const subreddit = subDoc.id.toLowerCase();
+  for (const subscription of subscriptions) {
+    const subreddit = subscription.subreddit.toLowerCase();
     const posts = postsBySubreddit[subreddit] || [];
 
     for (const post of posts) {
@@ -396,17 +411,27 @@ exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
     displayName: user.displayName || null,
     photoURL: user.photoURL || null,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    fcmTokens: [],
   });
 
-  // Create default subscriptions
-  const subscriptionsRef = db.collection("users").doc(user.uid).collection("subscriptions");
-  const batch = db.batch();
+  // Create default subscriptions in settings document
+  const defaultSubscriptions = [
+    { subreddit: "Catan", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "SettlersofCatan", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "CatanUniverse", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "Colonist", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "twosheep", showFilter: "all", notifyFilter: "none" },
+    { subreddit: "boardgames", showFilter: "catan", notifyFilter: "none" },
+    { subreddit: "tabletopgaming", showFilter: "catan", notifyFilter: "none" },
+  ];
 
-  for (const [subreddit, settings] of Object.entries(DEFAULT_SUBSCRIPTIONS)) {
-    batch.set(subscriptionsRef.doc(subreddit), settings);
-  }
+  await db
+    .collection("users")
+    .doc(user.uid)
+    .collection("settings")
+    .doc("subscriptions")
+    .set({ subscriptions: defaultSubscriptions });
 
-  await batch.commit();
   console.log(`Created default subscriptions for user ${user.uid}`);
 
   // Fetch initial posts
@@ -490,4 +515,96 @@ exports.saveFcmToken = functions.https.onCall(async (data, context) => {
     });
 
   return { success: true };
+});
+
+/**
+ * Callable function to fetch detailed post information from Reddit
+ * Results are cached indefinitely in a shared 'posts' collection.
+ * Pass forceRefresh: true to fetch fresh data.
+ */
+exports.getPostDetails = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "User must be authenticated");
+  }
+
+  const { subreddit, postId, forceRefresh } = data;
+
+  if (!subreddit || !postId) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "Subreddit and postId are required"
+    );
+  }
+
+  // Check if we already have cached details
+  const cacheRef = db.collection("posts").doc(postId);
+  const cachedDoc = await cacheRef.get();
+
+  if (cachedDoc.exists && !forceRefresh) {
+    console.log(`Returning cached details for post ${postId}`);
+    return cachedDoc.data();
+  }
+
+  // Fetch fresh data from Reddit
+  console.log(`Fetching details for r/${subreddit}/comments/${postId}`);
+
+  try {
+    const response = await fetch(
+      `https://www.reddit.com/r/${subreddit}/comments/${postId}.json`,
+      {
+        headers: {
+          "User-Agent": "Reddalert/1.0 (Firebase Cloud Function)",
+        },
+      }
+    );
+
+    if (!response.ok) {
+      throw new functions.https.HttpsError(
+        "unavailable",
+        `Reddit returned ${response.status}`
+      );
+    }
+
+    const jsonData = await response.json();
+
+    if (!jsonData || !jsonData[0] || !jsonData[0].data || !jsonData[0].data.children[0]) {
+      throw new functions.https.HttpsError("not-found", "Post not found on Reddit");
+    }
+
+    const postData = jsonData[0].data.children[0].data;
+
+    // Extract the details we care about
+    const details = {
+      redditId: postId,
+      subreddit: postData.subreddit,
+      title: postData.title,
+      author: postData.author,
+      score: postData.score,
+      upvoteRatio: postData.upvote_ratio,
+      numComments: postData.num_comments,
+      permalink: postData.permalink,
+      url: postData.url,
+      selftext: postData.selftext || null,
+      thumbnail: postData.thumbnail !== "self" && postData.thumbnail !== "default"
+        ? postData.thumbnail
+        : null,
+      flair: postData.link_flair_text || null,
+      isVideo: postData.is_video || false,
+      createdUtc: postData.created_utc,
+      fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    // Cache the details
+    await cacheRef.set(details);
+
+    console.log(`Cached details for post ${postId}: ${details.score} upvotes, ${details.numComments} comments`);
+
+    return details;
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error(`Error fetching post details:`, error);
+    throw new functions.https.HttpsError("internal", "Failed to fetch post details");
+  }
 });

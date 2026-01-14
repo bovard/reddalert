@@ -1,16 +1,36 @@
-# app
+# Reddalert Web App
 
-A new Flutter project.
+React + TypeScript frontend for Reddalert, built with Vite.
 
-## Getting Started
+## Development
 
-This project is a starting point for a Flutter application.
+```bash
+# Install dependencies
+npm install
 
-A few resources to get you started if this is your first Flutter project:
+# Start development server
+npm run dev
+```
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+The app will be available at http://localhost:5173
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Firebase Configuration
+
+The app requires a Firebase project. Create a `.env` file with:
+
+```
+VITE_FIREBASE_API_KEY=your-api-key
+VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your-project-id
+VITE_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
+VITE_FIREBASE_APP_ID=your-app-id
+```
+
+## Build
+
+```bash
+npm run build
+```
+
+Output is in the `dist/` directory.

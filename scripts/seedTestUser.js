@@ -21,16 +21,16 @@ admin.initializeApp({
 const db = admin.firestore();
 const auth = admin.auth();
 
-// Default subscriptions for new users
-const DEFAULT_SUBSCRIPTIONS = {
-  catan: { showFilter: 'all', notifyFilter: 'none', enabled: true },
-  settlersofcatan: { showFilter: 'all', notifyFilter: 'none', enabled: true },
-  catanuniverse: { showFilter: 'all', notifyFilter: 'none', enabled: true },
-  colonist: { showFilter: 'all', notifyFilter: 'none', enabled: true },
-  twosheep: { showFilter: 'all', notifyFilter: 'none', enabled: true },
-  boardgames: { showFilter: 'catan', notifyFilter: 'none', enabled: true },
-  tabletopgaming: { showFilter: 'catan', notifyFilter: 'none', enabled: true },
-};
+// Default subscriptions for new users (array format)
+const DEFAULT_SUBSCRIPTIONS = [
+  { subreddit: 'Catan', showFilter: 'all', notifyFilter: 'none' },
+  { subreddit: 'SettlersofCatan', showFilter: 'all', notifyFilter: 'none' },
+  { subreddit: 'CatanUniverse', showFilter: 'all', notifyFilter: 'none' },
+  { subreddit: 'Colonist', showFilter: 'all', notifyFilter: 'none' },
+  { subreddit: 'twosheep', showFilter: 'all', notifyFilter: 'none' },
+  { subreddit: 'boardgames', showFilter: 'catan', notifyFilter: 'none' },
+  { subreddit: 'tabletopgaming', showFilter: 'catan', notifyFilter: 'none' },
+];
 
 async function seedTestUser() {
   console.log('Creating test user...');
@@ -65,18 +65,17 @@ async function seedTestUser() {
       displayName: testDisplayName,
       photoURL: null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      fcmTokens: [],
     });
     console.log('Created user document');
 
-    // Create default subscriptions
-    const subscriptionsRef = db.collection('users').doc(user.uid).collection('subscriptions');
-    const batch = db.batch();
-
-    for (const [subreddit, settings] of Object.entries(DEFAULT_SUBSCRIPTIONS)) {
-      batch.set(subscriptionsRef.doc(subreddit), settings);
-    }
-
-    await batch.commit();
+    // Create default subscriptions in settings document
+    await db
+      .collection('users')
+      .doc(user.uid)
+      .collection('settings')
+      .doc('subscriptions')
+      .set({ subscriptions: DEFAULT_SUBSCRIPTIONS });
     console.log('Created default subscriptions');
 
     console.log('\n========================================');
