@@ -1,90 +1,76 @@
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall } = require("firebase-functions/v2/https");
+const { onRequest } = require("firebase-functions/v2/https");
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const { getFirestore, Timestamp, FieldValue } = require("firebase-admin/firestore");
-const Parser = require("rss-parser");
 
 admin.initializeApp();
 
 const db = getFirestore();
-const parser = new Parser({
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  },
-});
-
-// All available subreddits to monitor
-const ALL_SUBREDDITS = [
-  "Catan",
-  "SettlersofCatan",
-  "CatanUniverse",
-  "Colonist",
-  "twosheep",
-  "boardgames",
-  "tabletopgaming",
-];
 
 /**
- * Scheduled function that runs every 15 minutes to check Reddit RSS feeds
- * and save new posts to the shared posts collection.
+ * HTTP endpoint to receive posts from local script
+ * POST /ingestPosts with JSON body: { posts: [...], apiKey: "..." }
  */
-exports.checkRedditFeeds = onSchedule("every 15 minutes", async (event) => {
-    console.log("Starting Reddit feed check...");
+exports.ingestPosts = onRequest({ cors: true }, async (req, res) => {
+  // Only allow POST
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
 
-    try {
-      let totalAdded = 0;
+  // Simple API key check (set via environment or hardcode for now)
+  const expectedKey = process.env.INGEST_API_KEY || "reddalert-ingest-key-2024";
+  const providedKey = req.body.apiKey || req.headers["x-api-key"];
 
-      for (const subreddit of ALL_SUBREDDITS) {
-        try {
-          const posts = await fetchSubredditPosts(subreddit);
-          console.log(`Fetched ${posts.length} posts from r/${subreddit}`);
+  if (providedKey !== expectedKey) {
+    res.status(401).json({ error: "Invalid API key" });
+    return;
+  }
 
-          // Save posts to shared collection
-          for (const post of posts) {
-            const postRef = db.collection("posts").doc(post.redditId);
-            const existing = await postRef.get();
+  const { posts } = req.body;
 
-            if (!existing.exists) {
-              await postRef.set({
-                ...post,
-                createdAt: Timestamp.fromDate(post.createdAt),
-                fetchedAt: FieldValue.serverTimestamp(),
-              });
-              totalAdded++;
-            }
-          }
-        } catch (error) {
-          console.error(`Error fetching r/${subreddit}:`, error.message);
-        }
+  if (!posts || !Array.isArray(posts)) {
+    res.status(400).json({ error: "posts array is required" });
+    return;
+  }
+
+  try {
+    let addedCount = 0;
+
+    for (const post of posts) {
+      if (!post.redditId) {
+        console.warn("Skipping post without redditId");
+        continue;
       }
 
-      console.log(`Feed check complete. Added ${totalAdded} new posts.`);
-      return null;
-    } catch (error) {
-      console.error("Error in checkRedditFeeds:", error);
-      throw error;
+      const postRef = db.collection("posts").doc(post.redditId);
+      const existing = await postRef.get();
+
+      if (!existing.exists) {
+        await postRef.set({
+          redditId: post.redditId,
+          title: post.title || "",
+          url: post.url || "",
+          permalink: post.permalink || "",
+          author: post.author || "",
+          subreddit: post.subreddit || "",
+          content: post.content || "",
+          createdAt: post.createdAt ? Timestamp.fromDate(new Date(post.createdAt)) : Timestamp.now(),
+          fetchedAt: FieldValue.serverTimestamp(),
+        });
+        addedCount++;
+      }
     }
-  });
 
-/**
- * Fetch posts from a subreddit's RSS feed
- */
-async function fetchSubredditPosts(subreddit) {
-  const feedUrl = `https://www.reddit.com/r/${subreddit}/new.rss`;
-  const feed = await parser.parseURL(feedUrl);
-
-  return feed.items.map((item) => ({
-    redditId: item.id || item.guid || item.link,
-    title: item.title || "",
-    url: item.link || "",
-    permalink: item.link || "",
-    author: (item.author || item.creator || "").replace("/u/", ""),
-    subreddit: subreddit,
-    content: item.contentSnippet || item.content || "",
-    createdAt: item.pubDate ? new Date(item.pubDate) : new Date(),
-  }));
-}
+    console.log(`Ingested ${addedCount} new posts out of ${posts.length} received`);
+    res.status(200).json({ success: true, added: addedCount, total: posts.length });
+  } catch (error) {
+    console.error("Error ingesting posts:", error);
+    res.status(500).json({ error: "Failed to ingest posts" });
+  }
+});
 
 /**
  * Callable function to fetch detailed post information from Reddit
@@ -180,7 +166,7 @@ exports.getPostDetails = onCall(async (request) => {
 });
 
 /**
- * Optional: Cleanup function - remove posts older than 30 days from shared collection
+ * Cleanup function - remove posts older than 30 days from shared collection
  * and clean up orphaned postStatus documents
  * Runs daily at midnight
  */
